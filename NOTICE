@@ -1,5 +1,13 @@
 Grok Review Xliberty
+Copyright 2026 grok-plugin community contributors
 
-This repository is a private standalone service runtime. Its LICENSE file is
-copied mechanically from the Grok Companion source repository as required for
-the initial repository setup.
+This product includes software derived from OpenAI's codex-plugin-cc,
+version 1.0.6, commit db52e28f4d9ded852ab3942cea316258ae4ef346.
+Copyright 2026 OpenAI.
+
+That donor is licensed under the Apache License, Version 2.0; its copyright
+and license terms are preserved in this repository's LICENSE and provenance
+documentation.
+
+Grok Review Xliberty is an independent project and is not affiliated with, endorsed by, or sponsored by OpenAI
+or xAI.
