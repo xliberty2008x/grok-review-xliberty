@@ -21,4 +21,38 @@ export const REQUEST_STATUS = Object.freeze({
   CANCELLED: "cancelled",
 });
 
+/** Statuses that a newer live-authorized request may supersede. */
+export const SUPERSEDABLE_STATUSES = Object.freeze([
+  REQUEST_STATUS.PENDING_DISPATCH,
+  REQUEST_STATUS.DISPATCHED,
+  REQUEST_STATUS.FAILED_DISPATCH,
+  REQUEST_STATUS.CLAIMED,
+  REQUEST_STATUS.STARTED,
+]);
+
+/** Statuses that may (re)attempt workflow dispatch. */
+export const RETRYABLE_DISPATCH_STATUSES = Object.freeze([
+  REQUEST_STATUS.PENDING_DISPATCH,
+  REQUEST_STATUS.FAILED_DISPATCH,
+]);
+
+/** Terminal request statuses (no further transitions). */
+export const TERMINAL_STATUSES = Object.freeze([
+  REQUEST_STATUS.SUPERSEDED,
+  REQUEST_STATUS.COMPLETED,
+  REQUEST_STATUS.FAILED,
+  REQUEST_STATUS.CANCELLED,
+]);
+
+export const OUTBOX_JOB_TYPE = Object.freeze({
+  DISPATCH: "dispatch",
+  CANCEL: "cancel",
+});
+
+export const OUTBOX_JOB_STATUS = Object.freeze({
+  PENDING: "pending",
+  LEASED: "leased",
+  COMPLETED: "completed",
+});
+
 export const WATCHDOG_STALE_MS = 15 * 60_000;
