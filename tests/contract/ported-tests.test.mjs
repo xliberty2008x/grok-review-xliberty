@@ -13,6 +13,7 @@ const MANIFEST_PATH = path.join(ROOT, "tests/fixtures/ported-app-tests.json");
 const SOURCE_COMMIT = "aee1171c2f346948feb2864784e13abe020dcb34";
 const HASH_ONE = "7381da16b1b7c54c198e11fcf1dc231834199c0f2886cc11f03cee3a7cb1657d";
 const HASH_TWO = "00750542256670cd020ab09d429d7438840d1a48eeaf6af55bfffac863614542";
+const W37_TARGET_BODY_SHA256 = "a78e0618be1dfec6ed55158eac1dac2170c0a0029e008796101b668245bfdec8";
 
 function manifest() {
   return JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
@@ -97,7 +98,11 @@ test("committed manifest has exact mappings, hierarchical groups, and plan-appro
     assert.equal(record.responsibility_group, expectedGroup(record.id), record.id);
     if (APPROVED_DELTAS.has(record.id)) {
       assert.equal(record.assertion_mode, "approved_delta", record.id);
-      assert.equal(record.approved_target_body_sha256, null, record.id);
+      assert.equal(
+        record.approved_target_body_sha256,
+        record.id === "W37" ? W37_TARGET_BODY_SHA256 : null,
+        record.id
+      );
       assert.equal(record.approved_contract_delta_reason, DELTA_REASONS.get(record.id), record.id);
     } else {
       assert.equal(record.assertion_mode, "mechanical", record.id);
@@ -105,6 +110,13 @@ test("committed manifest has exact mappings, hierarchical groups, and plan-appro
       assert.equal("approved_target_body_sha256" in record, false, record.id);
     }
   }
+  assert.deepEqual(
+    value.tests
+      .filter((record) => record.assertion_mode === "approved_delta"
+        && record.approved_target_body_sha256 !== null)
+      .map((record) => record.id),
+    ["W37"]
+  );
   assert.equal(value.tests.find((record) => record.id === "W29").assertion_mode, "mechanical");
   assert.deepEqual(value.post_baseline_security_deltas, ["immutable-control-ref"]);
 });

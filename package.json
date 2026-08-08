@@ -11,7 +11,7 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "node --test tests/unit/*.test.mjs tests/contract/*.test.mjs tests/integration/*.test.mjs",
+    "test": "node --test",
     "format:check": "prettier --check .",
     "check:boundaries": "node scripts/check-import-boundaries.mjs",
     "check:pins": "node scripts/check-pins.mjs",

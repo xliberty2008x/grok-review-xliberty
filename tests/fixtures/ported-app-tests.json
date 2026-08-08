@@ -429,7 +429,7 @@
       "target_suite": "tests/unit/control-plane.test.mjs",
       "assertion_mode": "approved_delta",
       "approved_contract_delta_reason": "external ID remains, while dispatch URL/ref selection moves to fixed static wrapper configuration plus the signed envelope.",
-      "approved_target_body_sha256": null
+      "approved_target_body_sha256": "a78e0618be1dfec6ed55158eac1dac2170c0a0029e008796101b668245bfdec8"
     },
     {
       "id": "W38",

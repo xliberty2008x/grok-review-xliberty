@@ -1,0 +1,17 @@
+{
+  "name": "@xliberty/grok-review-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22.17.1"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "dependencies": {
+    "@xliberty/grok-executor": "0.0.0",
+    "@xliberty/grok-review-contracts": "0.0.0",
+    "@xliberty/grok-reviewer": "0.0.0"
+  }
+}

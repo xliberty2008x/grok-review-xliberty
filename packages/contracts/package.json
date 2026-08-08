@@ -1,0 +1,12 @@
+{
+  "name": "@xliberty/grok-review-contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22.17.1"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  }
+}
