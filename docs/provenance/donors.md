@@ -241,3 +241,53 @@ The transported source is
 `aee1171c2f346948feb2864784e13abe020dcb34`. Prior live evidence for
 `ea3594fb1f7cc546ede6d3dca2282860e54b8721` is provenance only; the new
 repository remains unqualified until `terminal_receipt_committed`.
+
+## Task 1 production cutover: App operations and regression ownership
+
+### Frozen hosted App source (`xliberty2008x/grok-plugin` / `grok-plugin-e2e`)
+
+- Exact revision: `aee1171c2f346948feb2864784e13abe020dcb34`.
+- Inspected / copied paths:
+  `apps/grok-review-app/README.md`,
+  `docs/operations/private-grok-review-app.md`,
+  `scripts/sync-grok-ci-auth.mjs`,
+  `scripts/install-grok-ci-auth-sync.mjs`,
+  `tests/ci-auth-sync.test.mjs`,
+  `tests/grok-review-app-worker.test.mjs`,
+  `tests/grok-review-app-github.test.mjs`,
+  `tests/grok-review-app-runner.test.mjs`,
+  and `tests/grok-review-app-target-collector.test.mjs`.
+- Useful invariant: operations and regression ownership move before old-host
+  removal.
+- Local adaptation: repository name only
+  (`xliberty2008x/grok-plugin` → `xliberty2008x/grok-review-xliberty` in
+  operational documentation).
+- Rejected or missing pattern: do not keep the watcher owned by a checkout that
+  will be deleted.
+
+### `openai/codex-plugin-cc`
+
+- Exact revision: `db52e28f4d9ded852ab3942cea316258ae4ef346`.
+- Inspected files: marketplace/plugin manifests, `commands/review.md`,
+  `broker-lifecycle.mjs`, and `session-lifecycle-hook.mjs`.
+- Useful invariant: the public integration stays thin while runtime-owned code
+  holds durable lifecycle and identity.
+- Local adaptation: this repository owns App operations, the auth watcher, and
+  the existing App regression suites; targets install only the GitHub App.
+- Rejected or missing pattern: local best-effort cleanup does not authorize
+  deleting a still-authoritative host before ownership has moved.
+
+### `xai-org/grok-build`
+
+- Exact revisions: contract audit
+  `47348d13ec4508dcfe440e34c6d511bb02998fb2`; current-source check
+  `afbc0fb710320c7add294c2106d447ecc3e3af2e`.
+- Inspected files: generated package/launcher, owner-scoped cancellation,
+  leader lock, and authentication storage.
+- Useful invariant: isolate auth homes and attest executables before provider
+  work; keep cancellation owner-scoped.
+- Local adaptation: the moved auth watcher remains the only central
+  `GROK_AUTH_JSON` owner after cutover and continues to fail closed on stale or
+  unsafe material.
+- Rejected or missing pattern: embedded ACP is not a hosted App operations or
+  auth-watcher model.
