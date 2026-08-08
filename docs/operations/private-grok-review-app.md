@@ -17,15 +17,15 @@ single auth watcher must remain.
 
 Use distinct identities and credentials:
 
-| Credential | Stored in | Purpose |
-|---|---|---|
-| GitHub App webhook secret | Worker secret `WEBHOOK_SECRET` | Authenticate raw GitHub webhooks |
-| Central dispatch token | Worker secret `CONTROL_REPO_TOKEN` | Actions write on the central control repository only |
-| Callback HMAC key | Worker and central secrets named `RUNNER_CALLBACK_SECRET` | Authenticate runner callbacks |
-| GitHub App RSA private key | Central secret `GROK_REVIEW_APP_PRIVATE_KEY` | Mint App JWTs and exact-repository installation tokens |
-| Grok login JSON | Central secret `GROK_AUTH_JSON` | Authenticate the tool-free Grok provider |
-| Ed25519 receipt private key | Central secret `RECEIPT_SIGNING_PRIVATE_KEY` | Sign sanitized review receipts |
-| Ed25519 receipt public-key map | Worker secret `RECEIPT_PUBLIC_KEYS_JSON` | Verify receipts before D1 acceptance |
+| Credential                     | Stored in                                                 | Purpose                                                |
+| ------------------------------ | --------------------------------------------------------- | ------------------------------------------------------ |
+| GitHub App webhook secret      | Worker secret `WEBHOOK_SECRET`                            | Authenticate raw GitHub webhooks                       |
+| Central dispatch token         | Worker secret `CONTROL_REPO_TOKEN`                        | Actions write on the central control repository only   |
+| Callback HMAC key              | Worker and central secrets named `RUNNER_CALLBACK_SECRET` | Authenticate runner callbacks                          |
+| GitHub App RSA private key     | Central secret `GROK_REVIEW_APP_PRIVATE_KEY`              | Mint App JWTs and exact-repository installation tokens |
+| Grok login JSON                | Central secret `GROK_AUTH_JSON`                           | Authenticate the tool-free Grok provider               |
+| Ed25519 receipt private key    | Central secret `RECEIPT_SIGNING_PRIVATE_KEY`              | Sign sanitized review receipts                         |
+| Ed25519 receipt public-key map | Worker secret `RECEIPT_PUBLIC_KEYS_JSON`                  | Verify receipts before D1 acceptance                   |
 
 The GitHub App RSA key and receipt Ed25519 key are unrelated keys. Do not reuse
 one for the other. The Worker gets only the receipt public-key map; it never
@@ -62,11 +62,17 @@ and set GitHub values through repository settings or `gh`.
 ## 2. Create D1 and deploy the Worker
 
 From `apps/grok-review-app`, authenticate Wrangler to the intended Cloudflare
-account and create the database:
+account and create the database. Resolve the checkout root once and invoke only
+the repository-pinned Wrangler under the exact Node toolchain:
 
 ```bash
-npx wrangler whoami
-npx wrangler d1 create grok-review-control
+TARGET_ROOT="$(cd "$(git rev-parse --show-toplevel)" && pwd -P)"
+NODE22="$TARGET_ROOT/evidence/private/vertical-staging/toolchains/node-v22.17.1-darwin-arm64/bin/node"
+WRANGLER="$TARGET_ROOT/node_modules/wrangler/bin/wrangler.js"
+"$NODE22" --version                 # v22.17.1
+"$NODE22" "$WRANGLER" --version      # 4.120.0
+"$NODE22" "$WRANGLER" whoami
+"$NODE22" "$WRANGLER" d1 create grok-review-control
 ```
 
 Copy `wrangler.toml` to a secure environment-specific deployment config outside
@@ -76,8 +82,8 @@ that file as `<DEPLOY_CONFIG>` below; never commit it.
 List and apply the checked-in migrations:
 
 ```bash
-npx wrangler d1 migrations list grok-review-control --remote --config <DEPLOY_CONFIG>
-npx wrangler d1 migrations apply grok-review-control --remote --config <DEPLOY_CONFIG>
+"$NODE22" "$WRANGLER" d1 migrations list grok-review-control --remote --config <DEPLOY_CONFIG>
+"$NODE22" "$WRANGLER" d1 migrations apply grok-review-control --remote --config <DEPLOY_CONFIG>
 ```
 
 Cloudflare records applied migrations in D1; review the pending list before each
@@ -86,10 +92,10 @@ apply. See [Cloudflare D1 migrations](https://developers.cloudflare.com/d1/refer
 Set Worker secrets interactively so values do not appear in command arguments:
 
 ```bash
-npx wrangler secret put WEBHOOK_SECRET --config <DEPLOY_CONFIG>
-npx wrangler secret put RUNNER_CALLBACK_SECRET --config <DEPLOY_CONFIG>
-npx wrangler secret put CONTROL_REPO_TOKEN --config <DEPLOY_CONFIG>
-npx wrangler secret put RECEIPT_PUBLIC_KEYS_JSON --config <DEPLOY_CONFIG>
+"$NODE22" "$WRANGLER" secret put WEBHOOK_SECRET --config <DEPLOY_CONFIG>
+"$NODE22" "$WRANGLER" secret put RUNNER_CALLBACK_SECRET --config <DEPLOY_CONFIG>
+"$NODE22" "$WRANGLER" secret put CONTROL_REPO_TOKEN --config <DEPLOY_CONFIG>
+"$NODE22" "$WRANGLER" secret put RECEIPT_PUBLIC_KEYS_JSON --config <DEPLOY_CONFIG>
 ```
 
 `CONTROL_REPO_TOKEN` must be fine-grained and limited to Actions write on the
@@ -102,7 +108,7 @@ Deploy and record the resulting HTTPS origin in the protected deployment
 inventory, not in this checkout:
 
 ```bash
-npx wrangler deploy --config <DEPLOY_CONFIG>
+"$NODE22" "$WRANGLER" deploy --config <DEPLOY_CONFIG>
 ```
 
 Cloudflare recommends secrets rather than plaintext vars for sensitive values;

@@ -259,9 +259,14 @@ repository remains unqualified until `terminal_receipt_committed`.
   and `tests/grok-review-app-target-collector.test.mjs`.
 - Useful invariant: operations and regression ownership move before old-host
   removal.
-- Local adaptation: repository name only
+- Local adaptation: repository name
   (`xliberty2008x/grok-plugin` → `xliberty2008x/grok-review-xliberty` in
-  operational documentation).
+  operational documentation) and a pinned deployment invocation:
+  `evidence/private/vertical-staging/toolchains/node-v22.17.1-darwin-arm64/bin/node`
+  executes only
+  `$TARGET_ROOT/node_modules/wrangler/bin/wrangler.js` (Wrangler
+  `4.120.0`); Prettier also normalizes the existing credential table so the
+  standalone operations-document gate is enforceable.
 - Rejected or missing pattern: do not keep the watcher owned by a checkout that
   will be deleted.
 
