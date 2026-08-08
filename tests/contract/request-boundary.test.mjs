@@ -109,10 +109,10 @@ test("request entrypoint keeps fixed health, webhook, legacy, callback, and unkn
     await signedWebhook({ url: `https://worker.example${WEBHOOK_PATH}/` }),
     env,
   );
-  assertJsonResponse(supported, 503);
+  assertJsonResponse(supported, 200);
   assert.deepEqual(await supported.json(), {
-    ok: false,
-    error: "webhook_route_unavailable",
+    ok: true,
+    result: "malformed",
   });
 });
 
@@ -315,7 +315,11 @@ test("webhook configuration rejects weak secrets mutable refs objects and access
     },
   });
   const snapshotted = await handleRequest(await signedWebhook(), proxiedEnv);
-  assertJsonResponse(snapshotted, 503);
+  assertJsonResponse(snapshotted, 200);
+  assert.deepEqual(await snapshotted.json(), {
+    ok: true,
+    result: "malformed",
+  });
   assert.deepEqual(descriptorReads, { WEBHOOK_SECRET: 1, CONTROL_REF: 1 });
   assert.equal(valueReads, 0);
 });
@@ -347,7 +351,7 @@ test("body limits reject unsafe declarations and cancel chunked overflow", async
   assert.equal(cancelled, true);
 });
 
-test("authentication failures and unavailable lifecycle routing never mutate D1", async () => {
+test("authentication failures and malformed authority routing never mutate D1", async () => {
   const env = makeEnv();
   const badSignature = await handleRequest(
     await signedWebhook({ signature: `sha256=${"00".repeat(32)}` }),
@@ -372,11 +376,11 @@ test("authentication failures and unavailable lifecycle routing never mutate D1"
   );
   assertJsonResponse(misconfigured, 500);
 
-  const unavailable = await handleRequest(await signedWebhook(), env);
-  assertJsonResponse(unavailable, 503);
-  assert.deepEqual(await unavailable.json(), {
-    ok: false,
-    error: "webhook_route_unavailable",
+  const malformed = await handleRequest(await signedWebhook(), env);
+  assertJsonResponse(malformed, 200);
+  assert.deepEqual(await malformed.json(), {
+    ok: true,
+    result: "malformed",
   });
   assertDbEmpty(env.DB);
 });
@@ -411,7 +415,11 @@ test("authenticated metadata is bounded and responses and logs exclude raw paylo
   console.error = (...args) => captured.push(args.join(" "));
   try {
     const response = await handleRequest(request, makeEnv());
-    assertJsonResponse(response, 503);
+    assertJsonResponse(response, 200);
+    assert.deepEqual(await response.clone().json(), {
+      ok: true,
+      result: "malformed",
+    });
     assert.equal(JSON.stringify(await response.json()).includes(canary), false);
 
     const ignored = await handleRequest(

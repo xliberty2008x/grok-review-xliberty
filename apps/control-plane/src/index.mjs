@@ -39,7 +39,11 @@ export {
 export {
   authenticateWebhookRequest,
   handleWebhook,
+  isAllowedEventAction,
+  isBotSender,
+  isExactManualCommand,
   readWebhookIdentityHeaders,
+  routeWebhookEvent,
 } from "./webhook.mjs";
 export {
   ALLOWED_JSON_CONTENT_TYPES,
@@ -61,7 +65,11 @@ export {
   upsertInstallation,
   addInstallationRepository,
   clearInstallationRepositories,
+  deleteInstallation,
+  ensureInstallationRow,
+  getInstallation,
   isInstallationRepoAuthorized,
+  removeInstallationRepository,
   getRequestById,
   getRequestByKey,
   getDelivery,

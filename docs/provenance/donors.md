@@ -144,3 +144,67 @@ returns `503 webhook_route_unavailable` for valid supported lifecycle events
 until installation authority, durable admission, and dispatch land. It does
 not acknowledge fake success, write D1, dispatch work, or qualify any live
 GitHub, Cloudflare, D1, or provider lifecycle.
+
+## Task 4C installation and trigger authority
+
+### `openai/codex-plugin-cc`
+
+- Exact revision: `db52e28f4d9ded852ab3942cea316258ae4ef346`.
+- Inspected files/surfaces: `.claude-plugin/marketplace.json`,
+  `plugins/codex/.claude-plugin/plugin.json`,
+  `plugins/codex/commands/review.md`,
+  `plugins/codex/scripts/lib/broker-lifecycle.mjs`, and
+  `plugins/codex/scripts/session-lifecycle-hook.mjs`.
+- Useful invariant: the public integration stays thin while a runtime-owned
+  boundary holds lifecycle authority and durable identity.
+- Local adaptation: GitHub installation and selected-repository authority now
+  live in the standalone edge control plane behind the authenticated webhook
+  boundary.
+- Rejected or missing pattern: this donor supplies no hosted GitHub App
+  installation/repository authority, D1 revocation fence, or trigger-admission
+  implementation.
+
+### `xai-org/grok-build`
+
+- Exact revisions: contract audit
+  `47348d13ec4508dcfe440e34c6d511bb02998fb2`; current-source check
+  `afbc0fb710320c7add294c2106d447ecc3e3af2e`.
+- Inspected files/surfaces: generated npm `grok/package.json` and `bin/grok`,
+  `crates/codegen/xai-grok-shell/src/session/acp_session_impl/tasks_cancel.rs`,
+  `crates/codegen/xai-grok-shell/src/leader/lock.rs`, and the generated CLI's
+  authentication-storage implementation.
+- Useful invariant: authorization and ownership gates must fail closed before
+  provider work starts, and cancellation remains scoped to its owner.
+- Local adaptation: installation revocation durably fences scoped hosted work
+  before any later executor or network-cancellation slice can run.
+- Rejected or missing pattern: embedded ACP is not a GitHub authority service,
+  and Grok Build supplies no hosted App, repository-selection, webhook, D1, or
+  service-IaC pattern.
+
+### Frozen parity source and staged adaptation
+
+The parity source remains
+`aee1171c2f346948feb2864784e13abe020dcb34`. This slice inspected the complete
+source `webhook.mjs`, `constants.mjs`, `memory-db.mjs`, `external-id.mjs`,
+`ids.mjs`, and `index.mjs`; the installation and supersession surfaces in
+`db.mjs`; and worker identities W08-W13/W19 plus their helpers. Their frozen
+SHA-256 values were:
+
+- `webhook.mjs`: `a9257c30fed425198df7adac92244ad5b49ce3f7d4cb4e0cc2fbca109657e7c5`;
+- `constants.mjs`: `d94e1a331420317d94b2b3ae2678573765adef22d3083767d35a1a602d441011`;
+- `db.mjs`: `9342cbed352fdc57ed372ac3e43b0d3d0e7219d318cd3c900125d0413bf63f92`;
+- `memory-db.mjs`: `7df2a379b57721e206e5c1a847b3bc862fe472ec857644d5648b6cb57ed569f2`;
+- `external-id.mjs`: `c82600aa441baca4a8145575e3006e04dba0ff8d816277ac87603f5cd6f788b5`;
+- `ids.mjs`: `90b4394c5ae15ecda2cf6060451d12d65e6d1ea671421547f3f68a3da082cc4f`;
+- `index.mjs`: `f20cff697fc268af4d2d69129c20cc109a90caa9dd9b5e74d835540fb78a5bf2`;
+- `tests/grok-review-app-worker.test.mjs`:
+  `cd7e3312bc27e4d258e5f66eac9754719d891194d72daa91fba36386d72c4c1a`.
+
+W09 and W10 are the only mechanically bound identities in this slice. The
+local authority layer performs installation/repository mutations and safe
+trigger decisions, but valid authorized triggers deliberately return
+`503 webhook_route_unavailable`. It admits no delivery or review request,
+executes no outbox job, performs no outbound call, and does not return fake
+`queued` success. W11 is deferred to Task 4D; W08, W12, and W19 to Task 4E;
+and W13 to Task 4F. This evidence is design parity, not live GitHub,
+Cloudflare, D1, or provider qualification.

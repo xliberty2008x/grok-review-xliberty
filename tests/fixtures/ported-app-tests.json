@@ -113,7 +113,7 @@
       "source_ordinal": 9,
       "name": "installation_repositories cannot unsuspend a suspended installation",
       "body_sha256": "5ceb42dea8ab2d0c0b65177ab43613630c7e7fbce40a26daf805cded852694ac",
-      "responsibility_group": "control-plane/authority",
+      "responsibility_group": "control-plane/installation-authority",
       "target_suite": "tests/unit/control-plane.test.mjs",
       "assertion_mode": "mechanical"
     },
@@ -124,7 +124,7 @@
       "source_ordinal": 10,
       "name": "installation removal blocks subsequent dispatch",
       "body_sha256": "c87df4a86a2fd83be4f62bf85f0595bf755050ae2d09da64414a2fb356459b3c",
-      "responsibility_group": "control-plane/authority",
+      "responsibility_group": "control-plane/installation-authority",
       "target_suite": "tests/unit/control-plane.test.mjs",
       "assertion_mode": "mechanical"
     },

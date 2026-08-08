@@ -46,8 +46,9 @@ function expectedGroup(id) {
     if ([5, 6, 38].includes(ordinal)) return "control-plane/webhook-boundary";
     if ([3, 4].includes(ordinal)) return "control-plane/webhook-lifecycle";
     if (ordinal === 7) return "control-plane/callback";
-    if ([8, 9, 10, 11, 12, 13, 19].includes(ordinal))
-      return "control-plane/authority";
+    if ([9, 10].includes(ordinal))
+      return "control-plane/installation-authority";
+    if ([8, 11, 12, 13, 19].includes(ordinal)) return "control-plane/authority";
     if ([14, 15, 16, 17, 18, 20, 21, 22].includes(ordinal))
       return "control-plane/admission";
     if (ordinal >= 23 && ordinal <= 29) return "control-plane/dispatch";
@@ -361,6 +362,12 @@ test("parent groups allow cumulative partial observation while leaf groups requi
       .selectGroup(value, "control-plane/webhook-lifecycle")
       .records.map((record) => record.id),
     ["W03", "W04"],
+  );
+  assert.deepEqual(
+    verifier
+      .selectGroup(value, "control-plane/installation-authority")
+      .records.map((record) => record.id),
+    ["W09", "W10"],
   );
   assert.equal(
     verifier

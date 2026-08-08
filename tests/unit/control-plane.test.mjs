@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  addInstallationRepository,
   createMemoryDb,
   getDelivery,
   handleRequest,
+  isInstallationRepoAuthorized,
+  upsertInstallation,
 } from "../../apps/control-plane/src/index.mjs";
 import {
   MAX_WEBHOOK_BYTES,
@@ -131,6 +134,32 @@ function basePrPayload(overrides = {}) {
   };
 }
 
+async function seedActiveInstall(
+  env,
+  installationId = "100",
+  repositoryId = "500",
+) {
+  const now = new Date().toISOString();
+  await upsertInstallation(env.DB, {
+    installationId,
+    accountId: "9",
+    accountType: "Organization",
+    suspended: 0,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await addInstallationRepository(env.DB, installationId, repositoryId);
+}
+
+function mockDispatchFetch(options = {}) {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return new Response(null, { status: options.status ?? 204 });
+  };
+  return { fetchImpl, calls };
+}
+
 test("IDs above 2^53 survive JSON parse and remain unchanged", () => {
   const raw = `{"installation":{"id":${HUGE_INSTALL}},"repository":{"id":${HUGE_REPO}},"n":1.5}`;
   const parsed = parseJsonPreservingIntegerIds(raw);
@@ -236,6 +265,66 @@ test("HMAC verifies raw body before JSON", async () => {
     true,
   );
   assert.equal(await verifyGitHubSignature256(body, good, "other"), false);
+});
+
+// prettier-ignore
+test("installation_repositories cannot unsuspend a suspended installation", async () => {
+  const env = makeEnv();
+  const { fetchImpl } = mockDispatchFetch();
+  await upsertInstallation(env.DB, {
+    installationId: "100",
+    accountId: "1",
+    accountType: "User",
+    suspended: 1,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const res = await invoke(
+    env,
+    await webhookRequest({
+      body: {
+        action: "added",
+        installation: { id: "100", account: { id: "1", type: "User" } },
+        repositories_added: [{ id: "500" }]
+      },
+      event: "installation_repositories",
+      deliveryId: "d-repo-add"
+    }),
+    { fetchImpl }
+  );
+  assert.equal((await res.json()).result, "repos_added");
+  assert.equal(env.DB.installations.get("100").suspended, 1);
+  assert.equal(await isInstallationRepoAuthorized(env.DB, "100", "500"), false);
+});
+
+// prettier-ignore
+test("installation removal blocks subsequent dispatch", async () => {
+  const env = makeEnv();
+  await seedActiveInstall(env);
+  const { fetchImpl, calls } = mockDispatchFetch();
+
+  await invoke(
+    env,
+    await webhookRequest({
+      body: { action: "deleted", installation: { id: "100" } },
+      event: "installation",
+      deliveryId: "d-del"
+    }),
+    { fetchImpl }
+  );
+
+  const res = await invoke(
+    env,
+    await webhookRequest({
+      body: basePrPayload(),
+      event: "pull_request",
+      deliveryId: "d-after-del"
+    }),
+    { fetchImpl }
+  );
+  assert.equal((await res.json()).result, "unauthorized");
+  assert.equal(calls.length, 0);
 });
 
 test("healthz and unknown routes", async () => {

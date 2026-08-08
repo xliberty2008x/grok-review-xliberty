@@ -6,6 +6,8 @@ export const MAX_WEBHOOK_BYTES = 1 * 1024 * 1024;
 export const MAX_CALLBACK_BYTES = 512 * 1024;
 export const WEBHOOK_PATH = "/github/webhooks";
 export const CALLBACK_PATH = "/internal/callback";
+export const MANUAL_REVIEW_COMMAND = "@grok-review review";
+export const CHECK_RERUN_IDENTIFIER = "grok_review_rerun";
 
 export const ALLOWED_JSON_CONTENT_TYPES = Object.freeze([
   "application/json",
@@ -71,5 +73,28 @@ export const OUTBOX_JOB_STATUS = Object.freeze({
   LEASED: "leased",
   COMPLETED: "completed",
 });
+
+export const ALLOWED_EVENT_ACTIONS = Object.freeze({
+  pull_request: Object.freeze([
+    "opened",
+    "reopened",
+    "ready_for_review",
+    "synchronize",
+  ]),
+  issue_comment: Object.freeze(["created"]),
+  check_run: Object.freeze(["requested_action"]),
+  installation: Object.freeze([
+    "created",
+    "deleted",
+    "suspend",
+    "unsuspend",
+    "new_permissions_accepted",
+  ]),
+  installation_repositories: Object.freeze(["added", "removed"]),
+});
+
+export const ALLOWED_EVENT_NAMES = Object.freeze(
+  Object.keys(ALLOWED_EVENT_ACTIONS),
+);
 
 export const WATCHDOG_STALE_MS = 15 * 60_000;
