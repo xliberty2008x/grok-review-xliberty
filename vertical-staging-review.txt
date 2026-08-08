@@ -1,0 +1,4 @@
+Vertical staging review fixture.
+
+This is inert text. The hosted reviewer must inspect it without executing
+repository code, hooks, workflows, submodules, package managers, or tests.
