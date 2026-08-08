@@ -58,33 +58,40 @@ export function parseJsonPreservingIntegerIds(text) {
       continue;
     }
     if (ch === "-" || (ch >= "0" && ch <= "9")) {
-      let j = i;
-      if (text[j] === "-") j += 1;
-      const digitStart = j;
-      while (j < text.length && text[j] >= "0" && text[j] <= "9") j += 1;
-      if (j === digitStart) {
-        out += ch;
+      const start = i;
+      if (text[i] === "-") i += 1;
+
+      if (text[i] === "0") {
         i += 1;
-        continue;
-      }
-      const next = text[j];
-      if (next === "." || next === "e" || next === "E") {
-        let k = j;
-        if (text[k] === ".") {
-          k += 1;
-          while (k < text.length && text[k] >= "0" && text[k] <= "9") k += 1;
+        if (text[i] >= "0" && text[i] <= "9") {
+          throw new SyntaxError("invalid json number");
         }
-        if (text[k] === "e" || text[k] === "E") {
-          k += 1;
-          if (text[k] === "+" || text[k] === "-") k += 1;
-          while (k < text.length && text[k] >= "0" && text[k] <= "9") k += 1;
-        }
-        out += text.slice(i, k);
-        i = k;
-        continue;
+      } else if (text[i] >= "1" && text[i] <= "9") {
+        i += 1;
+        while (text[i] >= "0" && text[i] <= "9") i += 1;
+      } else {
+        throw new SyntaxError("invalid json number");
       }
-      out += `"${text.slice(i, j)}"`;
-      i = j;
+
+      let integer = true;
+      if (text[i] === ".") {
+        integer = false;
+        i += 1;
+        const fractionStart = i;
+        while (text[i] >= "0" && text[i] <= "9") i += 1;
+        if (i === fractionStart) throw new SyntaxError("invalid json number");
+      }
+      if (text[i] === "e" || text[i] === "E") {
+        integer = false;
+        i += 1;
+        if (text[i] === "+" || text[i] === "-") i += 1;
+        const exponentStart = i;
+        while (text[i] >= "0" && text[i] <= "9") i += 1;
+        if (i === exponentStart) throw new SyntaxError("invalid json number");
+      }
+
+      const token = text.slice(start, i);
+      out += integer ? `"${token}"` : token;
       continue;
     }
     out += ch;

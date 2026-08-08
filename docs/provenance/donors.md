@@ -93,3 +93,54 @@ project is independent and does not claim endorsement by OpenAI or xAI.
 
 This inspection is design evidence only. It does not qualify a D1 deployment
 or a live hosted lifecycle.
+
+## Task 4B authenticated request boundary
+
+### `openai/codex-plugin-cc`
+
+- Exact revision: `db52e28f4d9ded852ab3942cea316258ae4ef346`.
+- Inspected files/surfaces: `.claude-plugin/marketplace.json`,
+  `plugins/codex/.claude-plugin/plugin.json`,
+  `plugins/codex/commands/review.md`,
+  `plugins/codex/scripts/lib/broker-lifecycle.mjs`, and
+  `plugins/codex/scripts/session-lifecycle-hook.mjs`.
+- Useful invariant: keep the public integration thin and put authentication,
+  lifecycle identity, and durable control in the runtime boundary.
+- Local adaptation: the standalone control plane authenticates the exact raw
+  GitHub webhook bytes and fixed immutable control ref before exposing bounded
+  metadata to later durable lifecycle slices.
+- Rejected or missing pattern: this donor supplies neither a hosted GitHub
+  webhook/D1 request boundary nor a substitute for durable admission.
+
+### `xai-org/grok-build`
+
+- Exact revisions: contract audit
+  `47348d13ec4508dcfe440e34c6d511bb02998fb2`; current-source check
+  `afbc0fb710320c7add294c2106d447ecc3e3af2e`.
+- Inspected files/surfaces: generated npm `grok/package.json` and `bin/grok`,
+  `crates/codegen/xai-grok-shell/src/session/acp_session_impl/tasks_cancel.rs`,
+  `crates/codegen/xai-grok-shell/src/leader/lock.rs`, and the generated CLI's
+  authentication-storage implementation.
+- Useful invariant: authentication and executable identity must fail closed
+  before an untrusted lifecycle can start.
+- Local adaptation: webhook HMAC and immutable control identity are edge-owned
+  gates; no Grok process or provider behavior is part of this slice.
+- Rejected or missing pattern: embedded ACP is not a hosted-service boundary,
+  and Grok Build supplies no GitHub webhook or D1 admission implementation.
+
+### Frozen parity source and staged adaptation
+
+The parity source is the frozen hosted App at
+`aee1171c2f346948feb2864784e13abe020dcb34`. Current and frozen SHA-256
+digests matched during this port:
+
+- `http.mjs`: `246925c36a8cf11d10c93fb7f92fdd5c06d99201f97d2119d422d6f286c804a1`;
+- `webhook.mjs`: `a9257c30fed425198df7adac92244ad5b49ce3f7d4cb4e0cc2fbca109657e7c5`;
+- `index.mjs`: `f20cff697fc268af4d2d69129c20cc109a90caa9dd9b5e74d835540fb78a5bf2`;
+- `ids.mjs`: `90b4394c5ae15ecda2cf6060451d12d65e6d1ea671421547f3f68a3da082cc4f`.
+
+The intentional staged adaptation authenticates and parses exactly now, then
+returns `503 webhook_route_unavailable` for valid supported lifecycle events
+until installation authority, durable admission, and dispatch land. It does
+not acknowledge fake success, write D1, dispatch work, or qualify any live
+GitHub, Cloudflare, D1, or provider lifecycle.

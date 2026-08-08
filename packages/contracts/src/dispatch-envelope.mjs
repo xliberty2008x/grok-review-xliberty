@@ -1,4 +1,5 @@
 import {
+  isImmutableControlRef,
   REQUEST_STATUS,
   TRIGGER_KIND,
   WATCHDOG_STALE_MS,
@@ -39,7 +40,6 @@ const IDENTIFIER_FIELDS = Object.freeze([
   "trigger_id",
   "actor_id",
 ]);
-const CONTROL_REF_RE = /^grok-review-runtime-[0-9a-f]{40}$/;
 const NONCE_RE = /^[0-9a-f]{32}$/;
 const SIGNATURE_RE = /^sha256=[0-9a-f]{64}$/;
 const ACTIVE_REQUEST_STATUSES = new Set([
@@ -138,7 +138,7 @@ export function createDispatchEnvelope(input) {
   if (!isCanonicalDecimalId(snapshot.issued_at))
     fail("invalid_dispatch_issued_at");
   if (!NONCE_RE.test(snapshot.nonce)) fail("invalid_dispatch_nonce");
-  if (!CONTROL_REF_RE.test(snapshot.control_ref))
+  if (!isImmutableControlRef(snapshot.control_ref))
     fail("invalid_dispatch_control_ref");
   validateStaticBinding(snapshot.workflow_file, snapshot.wrapper);
   return Object.freeze(snapshot);
@@ -160,7 +160,7 @@ function validateExpectedBindings(
   expectedWorkflowFile,
   expectedWrapper,
 ) {
-  if (!CONTROL_REF_RE.test(expectedControlRef || ""))
+  if (!isImmutableControlRef(expectedControlRef))
     fail("invalid_expected_control_ref");
   validateStaticBinding(expectedWorkflowFile, expectedWrapper, "expected");
 }

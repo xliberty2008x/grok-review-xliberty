@@ -4,9 +4,7 @@
   "hash_contract": "SHA-256 of the trimmed top-level test callback argument, excluding the test name and call terminator.",
   "frozen_app_test_count": 104,
   "required_current_test_count": 105,
-  "post_baseline_security_deltas": [
-    "immutable-control-ref"
-  ],
+  "post_baseline_security_deltas": ["immutable-control-ref"],
   "tests": [
     {
       "id": "W01",
@@ -39,7 +37,7 @@
       "source_ordinal": 3,
       "name": "end-to-end webhook preserves over-2^53 installation and repository IDs",
       "body_sha256": "93217fe4cb0ae35995c6c5e8b132c594cfb0529177dd2ba8e6a871c4e30cdaf6",
-      "responsibility_group": "control-plane/webhook",
+      "responsibility_group": "control-plane/webhook-lifecycle",
       "target_suite": "tests/unit/control-plane.test.mjs",
       "assertion_mode": "approved_delta",
       "approved_contract_delta_reason": "standalone `apps/control-plane` module/config locations replace source App-local request-boundary paths while preserving the reviewed behavior.",
@@ -52,7 +50,7 @@
       "source_ordinal": 4,
       "name": "only exact POST /github/webhooks is admitted; /webhook is 404",
       "body_sha256": "41f2f20430f28c1bcce21d264241845cbf7f7aeca0def0f1fcb5fda624dd970e",
-      "responsibility_group": "control-plane/webhook",
+      "responsibility_group": "control-plane/webhook-lifecycle",
       "target_suite": "tests/unit/control-plane.test.mjs",
       "assertion_mode": "approved_delta",
       "approved_contract_delta_reason": "standalone `apps/control-plane` module/config locations replace source App-local request-boundary paths while preserving the reviewed behavior.",
@@ -65,11 +63,11 @@
       "source_ordinal": 5,
       "name": "webhook rejects non-JSON content-type, missing headers, invalid HMAC, oversized body",
       "body_sha256": "fbca5fb0000e13d5a0169549c3183e64a1e74315c78be94c08109a7f8d84d903",
-      "responsibility_group": "control-plane/webhook",
+      "responsibility_group": "control-plane/webhook-boundary",
       "target_suite": "tests/unit/control-plane.test.mjs",
       "assertion_mode": "approved_delta",
       "approved_contract_delta_reason": "standalone `apps/control-plane` module/config locations replace source App-local request-boundary paths while preserving the reviewed behavior.",
-      "approved_target_body_sha256": null
+      "approved_target_body_sha256": "40ec0a369daaf17f681528d3523a45108612031a52a031fe95652c1e202a88bc"
     },
     {
       "id": "W06",
@@ -78,11 +76,11 @@
       "source_ordinal": 6,
       "name": "HMAC verifies raw body before JSON",
       "body_sha256": "11a93160983ed04860423cb791f6625c097cd2dcdda341420a641a8abfbd84f4",
-      "responsibility_group": "control-plane/webhook",
+      "responsibility_group": "control-plane/webhook-boundary",
       "target_suite": "tests/unit/control-plane.test.mjs",
       "assertion_mode": "approved_delta",
       "approved_contract_delta_reason": "standalone `apps/control-plane` module/config locations replace source App-local request-boundary paths while preserving the reviewed behavior.",
-      "approved_target_body_sha256": null
+      "approved_target_body_sha256": "1bcd87d92047499d06d21abe741a63089a859908e2f8067d97db4331be6017fe"
     },
     {
       "id": "W07",
@@ -91,7 +89,7 @@
       "source_ordinal": 7,
       "name": "webhook and callback HMAC secrets fail closed below 32 bytes or with invalid encoding bounds",
       "body_sha256": "27c5735d11274374644d41b022987a20b89a1e1fa59648e7a992a59adafc8638",
-      "responsibility_group": "control-plane/webhook",
+      "responsibility_group": "control-plane/callback",
       "target_suite": "tests/unit/control-plane.test.mjs",
       "assertion_mode": "approved_delta",
       "approved_contract_delta_reason": "standalone `apps/control-plane` module/config locations replace source App-local request-boundary paths while preserving the reviewed behavior.",
@@ -438,11 +436,11 @@
       "source_ordinal": 38,
       "name": "healthz and unknown routes",
       "body_sha256": "330aa1103b3e0951a7ea066732be4bcf9f48c25516c49972b02dba84350bebcb",
-      "responsibility_group": "control-plane/webhook",
+      "responsibility_group": "control-plane/webhook-boundary",
       "target_suite": "tests/unit/control-plane.test.mjs",
       "assertion_mode": "approved_delta",
       "approved_contract_delta_reason": "standalone `apps/control-plane` module/config locations replace source App-local request-boundary paths while preserving the reviewed behavior.",
-      "approved_target_body_sha256": null
+      "approved_target_body_sha256": "e84702fd12b3309dc2a16c6d485627ee929cd23cef1a6ff87de3be4e351a7cac"
     },
     {
       "id": "G01",
