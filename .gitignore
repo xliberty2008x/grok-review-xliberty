@@ -1,0 +1,42 @@
+node_modules/
+
+# Terraform state and plans
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+# Wrangler local and rendered configuration
+.wrangler/
+wrangler.generated.*
+wrangler.rendered.*
+
+# Build, release, and diagnostic output
+dist/
+build/
+release-output/
+release-artifacts/
+release/output/
+release/build/
+*.log
+logs/
+
+# Credentials and local authentication material
+.env
+.env.*
+!.env.example
+/.auth/
+/.credentials/
+/auth.local/
+/credentials.local/
+/auth.json
+/credentials.json
+/auth.token
+/credentials.token
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Private qualification evidence
+evidence/private/
