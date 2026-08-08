@@ -208,3 +208,36 @@ executes no outbox job, performs no outbound call, and does not return fake
 `queued` success. W11 is deferred to Task 4D; W08, W12, and W19 to Task 4E;
 and W13 to Task 4F. This evidence is design parity, not live GitHub,
 Cloudflare, D1, or provider qualification.
+
+## Vertical-first staging compatibility transport
+
+### `openai/codex-plugin-cc`
+
+- Exact revision: `db52e28f4d9ded852ab3942cea316258ae4ef346`.
+- Inspected files: marketplace/plugin manifests, `commands/review.md`,
+  `broker-lifecycle.mjs`, and `session-lifecycle-hook.mjs`.
+- Useful invariant: the installed integration remains thin while the trusted
+  runtime owns lifecycle identity and durable terminal evidence.
+- Local adaptation: the E2E repository installs only the staging App; this
+  independent control repository owns the copied Worker and runner.
+- Rejected or missing pattern: local best-effort cleanup and the donor's absent
+  hosted deployment model do not replace D1-backed recovery.
+
+### `xai-org/grok-build`
+
+- Exact revisions: contract audit
+  `47348d13ec4508dcfe440e34c6d511bb02998fb2`; current source
+  `afbc0fb710320c7add294c2106d447ecc3e3af2e`.
+- Inspected files: generated package/launcher, owner-scoped cancellation,
+  leader lock, and authentication storage.
+- Useful invariant: attest one executable, isolate its auth home, scope
+  cancellation to the owner, and terminate/reap within bounded control.
+- Local adaptation: the compatibility runner preserves the frozen tool-free
+  review and executable-attestation lifecycle for the first staging proof.
+- Rejected or missing pattern: embedded ACP is not a hosted-service design,
+  and Grok Build supplies no GitHub App, D1, or delivery model.
+
+The transported source is
+`aee1171c2f346948feb2864784e13abe020dcb34`. Prior live evidence for
+`ea3594fb1f7cc546ede6d3dca2282860e54b8721` is provenance only; the new
+repository remains unqualified until `terminal_receipt_committed`.
