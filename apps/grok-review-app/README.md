@@ -110,15 +110,17 @@ Non-secret vars:
 | `CONTROL_WORKFLOW_FILE` | Static environment-bound runner: `grok-review-app-worker-staging.yml` or `grok-review-app-worker-production.yml`                                                                                                                                                                              |
 | `CONTROL_REF`           | Immutable control-repo tag `grok-review-runtime-<40 lowercase hex>`; must point to the same commit as `GROK_REVIEW_RUNTIME_COMMIT`. GitHub `workflow_dispatch.ref` accepts a branch or tag name, not a raw SHA; the runner still hard-gates `GITHUB_SHA`, checked-out HEAD, and bundle digest |
 | `GITHUB_APP_ID`         | Canonical decimal App ID used for App-owned Check validation                                                                                                                                                                                                                                  |
+| `RUNTIME_COMMIT`        | Exact trusted plugin commit as lowercase 40-hex; must match the immutable runtime tag target and Actions `GROK_REVIEW_RUNTIME_COMMIT`. Required by `/health` and `/healthz`                                                                                                                   |
 
 Secrets:
 
-| Name                       | Meaning                                                                                        |
-| -------------------------- | ---------------------------------------------------------------------------------------------- |
-| `WEBHOOK_SECRET`           | High-entropy GitHub App webhook secret, 32–4096 UTF-8 bytes without control characters         |
-| `RUNNER_CALLBACK_SECRET`   | HMAC key shared only with the central workflow, 32–4096 UTF-8 bytes without control characters |
-| `CONTROL_REPO_TOKEN`       | Fine-grained token with Actions write on the central control repository only                   |
-| `RECEIPT_PUBLIC_KEYS_JSON` | Trusted map of Ed25519 public SPKI keys keyed by the runner-derived key ID                     |
+| Name                          | Meaning                                                                                                                                                                 |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WEBHOOK_SECRET`              | High-entropy GitHub App webhook secret, 32–4096 UTF-8 bytes without control characters                                                                                  |
+| `RUNNER_CALLBACK_SECRET`      | HMAC key shared only with the central workflow, 32–4096 UTF-8 bytes without control characters                                                                          |
+| `RUNNER_CALLBACK_SECRET_NEXT` | Optional second callback HMAC for rotation overlap; same validity rules as primary. Absent or empty means primary-only; malformed values fail closed as `misconfigured` |
+| `CONTROL_REPO_TOKEN`          | Fine-grained token with Actions write on the central control repository only                                                                                            |
+| `RECEIPT_PUBLIC_KEYS_JSON`    | Trusted map of Ed25519 public SPKI keys keyed by the runner-derived key ID                                                                                              |
 
 `RECEIPT_PUBLIC_KEYS_JSON` is stored as a Worker secret because it is operational
 trust configuration, even though it contains public keys. The Worker receives
@@ -127,6 +129,12 @@ no receipt private key and no GitHub App private key.
 Runner callbacks use `X-Grok-Signature`, `X-Grok-Timestamp`, and
 `X-Grok-Nonce`; the signature authenticates the exact timestamp, nonce, and raw
 callback body before D1 accepts a state transition.
+
+For callback rotation, publish the new value to the Worker first as
+`RUNNER_CALLBACK_SECRET_NEXT`, then configure the runner's
+`RUNNER_CALLBACK_SECRET` with that same value. After every old-key run is
+terminal, promote the new value to the Worker's primary secret and remove the
+overlap secret.
 
 ### Central GitHub Actions repository
 

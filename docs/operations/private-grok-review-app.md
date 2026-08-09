@@ -22,6 +22,7 @@ Use distinct identities and credentials:
 | GitHub App webhook secret      | Worker secret `WEBHOOK_SECRET`                            | Authenticate raw GitHub webhooks                       |
 | Central dispatch token         | Worker secret `CONTROL_REPO_TOKEN`                        | Actions write on the central control repository only   |
 | Callback HMAC key              | Worker and central secrets named `RUNNER_CALLBACK_SECRET` | Authenticate runner callbacks                          |
+| Callback overlap HMAC          | Optional Worker secret `RUNNER_CALLBACK_SECRET_NEXT`      | Accept old and new runner callbacks during rotation    |
 | GitHub App RSA private key     | Central secret `GROK_REVIEW_APP_PRIVATE_KEY`              | Mint App JWTs and exact-repository installation tokens |
 | Grok login JSON                | Central secret `GROK_AUTH_JSON`                           | Authenticate the tool-free Grok provider               |
 | Ed25519 receipt private key    | Central secret `RECEIPT_SIGNING_PRIVATE_KEY`              | Sign sanitized review receipts                         |
@@ -31,10 +32,11 @@ The GitHub App RSA key and receipt Ed25519 key are unrelated keys. Do not reuse
 one for the other. The Worker gets only the receipt public-key map; it never
 gets either private key. Target installations get neither.
 
-Both HMAC keys (`WEBHOOK_SECRET` and `RUNNER_CALLBACK_SECRET`) must encode to
-32–4096 UTF-8 bytes and contain no control characters. The Worker returns a
-configuration error before reading or authenticating a request when either key
-violates this contract.
+Each configured HMAC key (`WEBHOOK_SECRET`, `RUNNER_CALLBACK_SECRET`, and the
+optional `RUNNER_CALLBACK_SECRET_NEXT`) must encode to 32–4096 UTF-8 bytes and
+contain no control characters. The Worker returns a configuration error before
+reading or authenticating a request when a configured key violates this
+contract.
 
 Prepare these non-secret central Actions variables:
 
@@ -55,6 +57,9 @@ Prepare these non-secret Worker vars:
   `grok-review-app-worker-production.yml` for the matching environment
 - `CONTROL_REF`
 - `GITHUB_APP_ID`
+- `RUNTIME_COMMIT` set to the exact lowercase 40-hex trusted runtime commit
+  (the same commit as the immutable tag and Actions
+  `GROK_REVIEW_RUNTIME_COMMIT`)
 
 Do not place real IDs, repository coordinates, deployed URLs, tokens, or keys in
 the repository. Keep environment-specific Wrangler configuration outside Git
@@ -95,9 +100,16 @@ Set Worker secrets interactively so values do not appear in command arguments:
 ```bash
 "$NODE22" "$WRANGLER" secret put WEBHOOK_SECRET --config <DEPLOY_CONFIG>
 "$NODE22" "$WRANGLER" secret put RUNNER_CALLBACK_SECRET --config <DEPLOY_CONFIG>
+# Optional only during callback-key overlap:
+"$NODE22" "$WRANGLER" secret put RUNNER_CALLBACK_SECRET_NEXT --config <DEPLOY_CONFIG>
 "$NODE22" "$WRANGLER" secret put CONTROL_REPO_TOKEN --config <DEPLOY_CONFIG>
 "$NODE22" "$WRANGLER" secret put RECEIPT_PUBLIC_KEYS_JSON --config <DEPLOY_CONFIG>
 ```
+
+For rotation, publish the new key to the Worker as
+`RUNNER_CALLBACK_SECRET_NEXT` before runners sign with it. After every old-key
+run is terminal, promote the new key to Worker `RUNNER_CALLBACK_SECRET` and
+remove `RUNNER_CALLBACK_SECRET_NEXT`.
 
 `CONTROL_REPO_TOKEN` must be fine-grained and limited to Actions write on the
 one central control repository. `RECEIPT_PUBLIC_KEYS_JSON` is the trusted
@@ -122,6 +134,9 @@ First verify the deployed public health route:
 ```bash
 curl --fail --silent --show-error https://<WORKER_HOST>/healthz
 ```
+
+Require the response's `runtime_commit` to equal the exact immutable release
+commit before App registration or any traffic change.
 
 Create a secure temporary copy of
 `apps/grok-review-app/github-app-manifest.template.json` and replace the
