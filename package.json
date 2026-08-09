@@ -13,12 +13,15 @@
   "scripts": {
     "test": "node --test",
     "test:app": "node --test tests/grok-review-app-worker.test.mjs tests/grok-review-app-github.test.mjs tests/grok-review-app-runner.test.mjs tests/grok-review-app-target-collector.test.mjs tests/ci-auth-sync.test.mjs",
-    "format:check": "prettier --check package.json README.md docs/superpowers",
+    "format:check": "prettier --check package.json README.md release scripts/build-release.mjs scripts/verify-release.mjs tests/release docs/superpowers",
+    "release:prepare": "node scripts/build-release.mjs",
+    "release:verify": "node scripts/verify-release.mjs",
+    "release:verify:manifest": "node scripts/verify-release.mjs --manifest-only --manifest release/grok-runtime-v1.json",
     "grok:ci-auth:sync": "node scripts/sync-grok-ci-auth.mjs",
     "grok:ci-auth:install": "node scripts/install-grok-ci-auth-sync.mjs install",
     "grok:ci-auth:status": "node scripts/install-grok-ci-auth-sync.mjs status",
     "grok:ci-auth:uninstall": "node scripts/install-grok-ci-auth-sync.mjs uninstall",
-    "check": "npm run format:check && npm test"
+    "check": "npm run format:check && npm test && npm run release:verify:manifest"
   },
   "devDependencies": {
     "prettier": "3.9.6",
