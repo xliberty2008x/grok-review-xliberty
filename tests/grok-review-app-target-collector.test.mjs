@@ -1097,6 +1097,163 @@ test("invalid UTF-8 model projection fails closed and is never base64 encoded", 
   );
 });
 
+test("owned existing info directory is leased and restored across sequential collections", async () => {
+  const source = buildSourceRepo(({ git, write, commit }) => {
+    git(["checkout", "-b", "feature"]);
+    write("src/app.js", "console.log(3)\n");
+    git(["add", "src/app.js"]);
+    commit("text");
+    git(["update-ref", "refs/pull/1/head", git(["rev-parse", "HEAD"])]);
+  });
+  const repo = await openFromSource(source);
+  const infoPath = path.join(repo.barePath, "info");
+  const attributesPath = path.join(infoPath, "attributes");
+  const sentinelPath = path.join(infoPath, "sentinel");
+  try {
+    fs.mkdirSync(infoPath, { recursive: false, mode: 0o755 });
+    fs.chmodSync(infoPath, 0o755);
+    fs.writeFileSync(sentinelPath, "caller-owned sentinel\n", {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx"
+    });
+    const infoBefore = fs.lstatSync(infoPath);
+    const sentinelBefore = fs.lstatSync(sentinelPath);
+
+    const first = await collectExactHeadDiff(repo);
+    const firstMode = fs.lstatSync(infoPath).mode & 0o777;
+    const attributesAfterFirst = fs.existsSync(attributesPath);
+    const second = await collectExactHeadDiff(repo);
+    const infoAfter = fs.lstatSync(infoPath);
+    const sentinelAfter = fs.lstatSync(sentinelPath);
+
+    assert.equal(first.modelPatch.equals(second.modelPatch), true);
+    assert.deepEqual(
+      {
+        infoInodePreserved:
+          infoAfter.dev === infoBefore.dev && infoAfter.ino === infoBefore.ino,
+        sentinelInodePreserved:
+          sentinelAfter.dev === sentinelBefore.dev
+          && sentinelAfter.ino === sentinelBefore.ino,
+        sentinelBytes: fs.readFileSync(sentinelPath, "utf8"),
+        firstMode,
+        finalMode: infoAfter.mode & 0o777,
+        attributesAfterFirst,
+        attributesAfterSecond: fs.existsSync(attributesPath)
+      },
+      {
+        infoInodePreserved: true,
+        sentinelInodePreserved: true,
+        sentinelBytes: "caller-owned sentinel\n",
+        firstMode: 0o755,
+        finalMode: 0o755,
+        attributesAfterFirst: false,
+        attributesAfterSecond: false
+      }
+    );
+  } finally {
+    await repo.dispose();
+    fs.rmSync(source.root, { recursive: true, force: true });
+  }
+});
+
+test("symlinked info directory fails closed without changing its external target", async () => {
+  const source = buildSourceRepo(({ git, write, commit }) => {
+    git(["checkout", "-b", "feature"]);
+    write("src/app.js", "console.log(4)\n");
+    git(["add", "src/app.js"]);
+    commit("text");
+    git(["update-ref", "refs/pull/1/head", git(["rev-parse", "HEAD"])]);
+  });
+  const repo = await openFromSource(source);
+  const external = tempDir("grok-attributes-external-");
+  const sentinelPath = path.join(external, "sentinel");
+  const infoPath = path.join(repo.barePath, "info");
+  try {
+    fs.chmodSync(external, 0o755);
+    fs.writeFileSync(sentinelPath, "external sentinel\n", {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx"
+    });
+    const externalBefore = fs.lstatSync(external);
+    const sentinelBefore = fs.lstatSync(sentinelPath);
+    fs.symlinkSync(external, infoPath, "dir");
+
+    await assert.rejects(
+      () => collectExactHeadDiff(repo),
+      (error) => error instanceof CollectorError
+        && error.code === CollectorErrorCode.E_COLLECTOR_STATE
+    );
+
+    const externalAfter = fs.lstatSync(external);
+    const sentinelAfter = fs.lstatSync(sentinelPath);
+    assert.equal(fs.lstatSync(infoPath).isSymbolicLink(), true);
+    assert.equal(externalAfter.mode & 0o777, externalBefore.mode & 0o777);
+    assert.equal(
+      externalAfter.dev === externalBefore.dev && externalAfter.ino === externalBefore.ino,
+      true
+    );
+    assert.equal(
+      sentinelAfter.dev === sentinelBefore.dev && sentinelAfter.ino === sentinelBefore.ino,
+      true
+    );
+    assert.equal(fs.readFileSync(sentinelPath, "utf8"), "external sentinel\n");
+    assert.equal(fs.existsSync(path.join(external, "attributes")), false);
+  } finally {
+    await repo.dispose();
+    fs.rmSync(external, { recursive: true, force: true });
+    fs.rmSync(source.root, { recursive: true, force: true });
+  }
+});
+
+test("model projection failure removes temporary attributes so retry preserves the original result", async () => {
+  const source = buildSourceRepo(({ git, write, commit }) => {
+    git(["checkout", "-b", "feature"]);
+    write(
+      "oversized.txt",
+      `${"x".repeat(CollectorLimits.MAX_MODEL_PATCH_BYTES + 4096)}\n`
+    );
+    git(["add", "oversized.txt"]);
+    commit("oversized text");
+    git(["update-ref", "refs/pull/1/head", git(["rev-parse", "HEAD"])]);
+  });
+  const repo = await openFromSource(source);
+  const attributesPath = path.join(repo.barePath, "info", "attributes");
+  const collectFailure = async () => {
+    try {
+      await collectExactHeadDiff(repo);
+      return null;
+    } catch (error) {
+      return error;
+    }
+  };
+  try {
+    const first = await collectFailure();
+    const attributesAfterFirst = fs.existsSync(attributesPath);
+    const second = await collectFailure();
+    const attributesAfterSecond = fs.existsSync(attributesPath);
+
+    assert.deepEqual(
+      {
+        firstCode: first?.code ?? null,
+        attributesAfterFirst,
+        secondCode: second?.code ?? null,
+        attributesAfterSecond
+      },
+      {
+        firstCode: CollectorErrorCode.E_MODEL_INPUT_TOO_LARGE,
+        attributesAfterFirst: false,
+        secondCode: CollectorErrorCode.E_MODEL_INPUT_TOO_LARGE,
+        attributesAfterSecond: false
+      }
+    );
+  } finally {
+    await repo.dispose();
+    fs.rmSync(source.root, { recursive: true, force: true });
+  }
+});
+
 test("preexisting info attributes override fails closed", async () => {
   const source = buildSourceRepo(({ git, write, commit }) => {
     git(["checkout", "-b", "feature"]);
@@ -1107,17 +1264,29 @@ test("preexisting info attributes override fails closed", async () => {
   });
   const repo = await openFromSource(source);
   try {
-    fs.mkdirSync(path.join(repo.barePath, "info"), { recursive: false, mode: 0o700 });
-    fs.writeFileSync(path.join(repo.barePath, "info", "attributes"), "* diff\n", {
+    const infoPath = path.join(repo.barePath, "info");
+    const attributesPath = path.join(infoPath, "attributes");
+    fs.mkdirSync(infoPath, { recursive: false, mode: 0o755 });
+    fs.chmodSync(infoPath, 0o755);
+    fs.writeFileSync(attributesPath, "* diff\n", {
       encoding: "utf8",
       mode: 0o600,
       flag: "wx"
     });
+    const attributesBefore = fs.lstatSync(attributesPath);
     await assert.rejects(
       () => collectExactHeadDiff(repo),
       (error) => error instanceof CollectorError
         && error.code === CollectorErrorCode.E_COLLECTOR_STATE
     );
+    const attributesAfter = fs.lstatSync(attributesPath);
+    assert.equal(fs.lstatSync(infoPath).mode & 0o777, 0o755);
+    assert.equal(
+      attributesAfter.dev === attributesBefore.dev
+        && attributesAfter.ino === attributesBefore.ino,
+      true
+    );
+    assert.equal(fs.readFileSync(attributesPath, "utf8"), "* diff\n");
   } finally {
     await repo.dispose();
     fs.rmSync(source.root, { recursive: true, force: true });
