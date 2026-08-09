@@ -51,7 +51,8 @@ Prepare these non-secret Worker vars:
 
 - `CONTROL_REPO_OWNER`
 - `CONTROL_REPO_NAME`
-- `CONTROL_WORKFLOW_FILE` set to `grok-review-app-worker.yml`
+- `CONTROL_WORKFLOW_FILE` set to `grok-review-app-worker-staging.yml` or
+  `grok-review-app-worker-production.yml` for the matching environment
 - `CONTROL_REF`
 - `GITHUB_APP_ID`
 
@@ -197,10 +198,11 @@ archive digest and store it as `GROK_REVIEW_RUNTIME_BUNDLE_SHA256`:
 git archive --format=tar <TRUSTED_COMMIT> | shasum -a 256
 ```
 
-Set `GROK_CLI_VERSION` to `0.2.112`. The workflow and runtime must verify the
-pinned package/runtime integrity before provider launch.
-Production rollout additionally requires the prebuilt digest-verified runtime
-bundle; mutable per-run package installation is prototype-only.
+Set `GROK_CLI_VERSION` to `0.2.112`. The static environment-bound workflow must
+download `grok-0.2.112-darwin-arm64` from the same immutable runtime release tag,
+verify its exact size and SHA-256, and complete the existing local Grok
+attestation before provider launch. Runtime jobs must never install the package
+from npm.
 
 Generate the receipt Ed25519 key pair separately from the GitHub App RSA key.
 Store the private key as PKCS#8 PEM in `RECEIPT_SIGNING_PRIVATE_KEY`. Export the
