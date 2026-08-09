@@ -19,11 +19,20 @@ export const CLOSED_MANIFEST = Object.freeze({
     package_integrity_sha256:
       "49862ac444a3ca9db560cac29c96b5f2503b4b004a61ac9ac64a558842398143",
     package_git_commit: "9bbd559437aaef77f2830978da7fcc8f59b07e33",
+    platform_package_name: "@xai-official/grok-darwin-arm64",
+    platform_package_tarball_size: 37094207,
+    platform_package_tarball_sha256:
+      "36f4aedb29affafaca63bb47be8cf3f918fc2350ff6920d43b5e473ab22b327f",
+    platform_package_integrity_sha256:
+      "633371990f1ed70635bfd160ba56545b344d9d3c4dfa74c9afebe4513dba3086",
+    platform_package_member: "package/bin/grok.br",
+    platform_package_notice_member: "package/THIRD_PARTY_NOTICES.md",
+    platform_package_notice_size: 7995,
   }),
   notice: Object.freeze({
     source_path: "release/THIRD_PARTY_NOTICES.md",
     asset_name: "THIRD_PARTY_NOTICES.md",
-    sha256: "8ce6186eb72090f0d8cf6b1c38f9ac9874e0739886bbf379b389097c84b7b937",
+    sha256: "e8785a6098a7ee780cd2db35745b8e53061cfb1b6da19147a308579466ea4e50",
   }),
   license: Object.freeze({
     spdx: "Apache-2.0",
@@ -49,6 +58,13 @@ const ASSET_KEYS = Object.freeze([
   "sha256",
   "package_integrity_sha256",
   "package_git_commit",
+  "platform_package_name",
+  "platform_package_tarball_size",
+  "platform_package_tarball_sha256",
+  "platform_package_integrity_sha256",
+  "platform_package_member",
+  "platform_package_notice_member",
+  "platform_package_notice_size",
 ]);
 const NOTICE_KEYS = Object.freeze(["source_path", "asset_name", "sha256"]);
 const LICENSE_KEYS = Object.freeze([
@@ -424,6 +440,20 @@ export function assertClosedManifestShape(manifest) {
       CLOSED_MANIFEST.asset.package_integrity_sha256 ||
     manifest.asset.package_git_commit !==
       CLOSED_MANIFEST.asset.package_git_commit ||
+    manifest.asset.platform_package_name !==
+      CLOSED_MANIFEST.asset.platform_package_name ||
+    manifest.asset.platform_package_tarball_size !==
+      CLOSED_MANIFEST.asset.platform_package_tarball_size ||
+    manifest.asset.platform_package_tarball_sha256 !==
+      CLOSED_MANIFEST.asset.platform_package_tarball_sha256 ||
+    manifest.asset.platform_package_integrity_sha256 !==
+      CLOSED_MANIFEST.asset.platform_package_integrity_sha256 ||
+    manifest.asset.platform_package_member !==
+      CLOSED_MANIFEST.asset.platform_package_member ||
+    manifest.asset.platform_package_notice_member !==
+      CLOSED_MANIFEST.asset.platform_package_notice_member ||
+    manifest.asset.platform_package_notice_size !==
+      CLOSED_MANIFEST.asset.platform_package_notice_size ||
     manifest.notice.source_path !== CLOSED_MANIFEST.notice.source_path ||
     manifest.notice.asset_name !== CLOSED_MANIFEST.notice.asset_name ||
     manifest.notice.sha256 !== CLOSED_MANIFEST.notice.sha256 ||

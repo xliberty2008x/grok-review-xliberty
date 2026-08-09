@@ -822,7 +822,12 @@ async function createOrRecoverPending(state, client, payload, marker, botId) {
       receiptMarker: marker,
       allowedStates: ["PENDING", "COMMENTED"]
     });
-    if (!existing) throw error;
+    if (!existing) {
+      if (safeErrorCode(error) === "github_http_422") {
+        throw runnerError("create_pending_review_http_422");
+      }
+      throw error;
+    }
     return existing;
   }
 }
@@ -850,7 +855,12 @@ async function submitOrRecover(state, client, pending, marker, botId) {
       receiptMarker: marker,
       allowedStates: ["COMMENTED"]
     });
-    if (!reconciled || reconciled.id !== pending.id) throw error;
+    if (!reconciled || reconciled.id !== pending.id) {
+      if (safeErrorCode(error) === "github_http_422") {
+        throw runnerError("submit_pending_review_http_422");
+      }
+      throw error;
+    }
     return reconciled;
   }
 }

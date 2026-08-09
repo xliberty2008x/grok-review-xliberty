@@ -244,6 +244,7 @@ git commit -m "chore: move review service ownership"
 - Create: `release/grok-runtime-v1.json`
 - Create: `release/THIRD_PARTY_NOTICES.md`
 - Create: `scripts/build-release.mjs`
+- Create: `scripts/extract-grok-package.mjs`
 - Create: `scripts/verify-release.mjs`
 - Create: `tests/release/release-contract.test.mjs`
 - Modify: `package.json`
@@ -253,6 +254,10 @@ git commit -m "chore: move review service ownership"
 - Consumes: an absolute path to an already-obtained raw Grok executable and a
   clean runtime commit.
 - Produces:
+  - `_extractVerifiedPackage(...)` and CLI
+    `extract-grok-package.mjs --package-tarball ABS --out ABS`, which verify the
+    exact script-disabled platform tarball, its upstream notice, and the raw
+    Brotli-decoded executable without invoking package lifecycle code;
   - `buildRelease({runtimeRoot, commit, grokBinary, outDir}) -> Promise<object>`;
   - `verifyRelease({runtimeRoot, commit, assetPath, licensePath, noticePath,
 manifestPath}) -> Promise<object>`;
@@ -286,8 +291,10 @@ await assert.rejects(
 
 Also assert that output directories must be absolute, real, owned, mode
 `0700`, not symlinks, and initially empty; asset publication uses exclusive
-creation and mode `0500`; output license/notice files use mode `0600`; the scripts never
-invoke npm, curl, gh, or a network URL.
+creation and mode `0500`; output license/notice files use mode `0600`; the
+release scripts never invoke npm, curl, gh, or a network URL. The extractor
+must reject an untrusted tar binary, a changed package, a changed upstream
+notice, and any existing output path.
 
 - [ ] **Step 2: Run RED**
 
@@ -296,8 +303,8 @@ NODE22=evidence/private/vertical-staging/toolchains/node-v22.17.1-darwin-arm64/b
 "$NODE22" --test tests/release/release-contract.test.mjs
 ```
 
-Expected: `ERR_MODULE_NOT_FOUND` for `scripts/build-release.mjs` or
-`scripts/verify-release.mjs`.
+Expected: `ERR_MODULE_NOT_FOUND` for `scripts/build-release.mjs`,
+`scripts/extract-grok-package.mjs`, or `scripts/verify-release.mjs`.
 
 - [ ] **Step 3: Add the closed manifest and notice**
 
@@ -314,12 +321,19 @@ Create `release/grok-runtime-v1.json` with exact keys:
     "size": 129363664,
     "sha256": "5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4",
     "package_integrity_sha256": "49862ac444a3ca9db560cac29c96b5f2503b4b004a61ac9ac64a558842398143",
-    "package_git_commit": "9bbd559437aaef77f2830978da7fcc8f59b07e33"
+    "package_git_commit": "9bbd559437aaef77f2830978da7fcc8f59b07e33",
+    "platform_package_name": "@xai-official/grok-darwin-arm64",
+    "platform_package_tarball_size": 37094207,
+    "platform_package_tarball_sha256": "36f4aedb29affafaca63bb47be8cf3f918fc2350ff6920d43b5e473ab22b327f",
+    "platform_package_integrity_sha256": "633371990f1ed70635bfd160ba56545b344d9d3c4dfa74c9afebe4513dba3086",
+    "platform_package_member": "package/bin/grok.br",
+    "platform_package_notice_member": "package/THIRD_PARTY_NOTICES.md",
+    "platform_package_notice_size": 7995
   },
   "notice": {
     "source_path": "release/THIRD_PARTY_NOTICES.md",
     "asset_name": "THIRD_PARTY_NOTICES.md",
-    "sha256": "8ce6186eb72090f0d8cf6b1c38f9ac9874e0739886bbf379b389097c84b7b937"
+    "sha256": "e8785a6098a7ee780cd2db35745b8e53061cfb1b6da19147a308579466ea4e50"
   },
   "license": {
     "spdx": "Apache-2.0",
@@ -330,21 +344,10 @@ Create `release/grok-runtime-v1.json` with exact keys:
 }
 ```
 
-Create the notice with these exact UTF-8 bytes and one trailing newline:
-
-```markdown
-# Third-Party Notices
-
-The private runtime release includes the raw executable distributed by `@xai-official/grok@0.2.112`.
-
-- Package: `@xai-official/grok`
-- Version: `0.2.112`
-- Source commit: `9bbd559437aaef77f2830978da7fcc8f59b07e33`
-- npm integrity: `sha512-dCXAiFHmn3JTOK+vPfCIzzum1GmxPB81NH73yYhqleXx1y/Ks3qjwJ+GeEXmB7eudiap98j9Nj1cDwH4lSuaOw==`
-- License metadata: `Apache-2.0`
-
-The release also includes `Apache-2.0.txt`, copied byte-for-byte from this repository's `LICENSE`.
-```
+Copy `package/THIRD_PARTY_NOTICES.md` byte-for-byte from the verified platform
+tarball. It is 7,995 bytes with SHA-256
+`e8785a6098a7ee780cd2db35745b8e53061cfb1b6da19147a308579466ea4e50`.
+Do not replace the vendor notice with a project-authored summary.
 
 The package tarball contains no separate LICENSE file, so the builder copies
 the repository’s exact Apache-2.0 `LICENSE` bytes to output asset
@@ -389,7 +392,7 @@ Set scripts:
 "release:prepare": "node scripts/build-release.mjs",
 "release:verify": "node scripts/verify-release.mjs",
 "release:verify:manifest": "node scripts/verify-release.mjs --manifest-only --manifest release/grok-runtime-v1.json",
-"format:check": "prettier --check package.json README.md release scripts/build-release.mjs scripts/verify-release.mjs tests/release docs/superpowers",
+"format:check": "prettier --check package.json README.md release/grok-runtime-v1.json scripts/build-release.mjs scripts/extract-grok-package.mjs scripts/verify-release.mjs tests/release docs/superpowers",
 "check": "npm run format:check && npm test && npm run release:verify:manifest"
 ```
 
@@ -401,10 +404,12 @@ source-only `check` does not pretend a 129-MiB private release input exists.
 ```bash
 "$NODE22" --test tests/release/release-contract.test.mjs
 PATH="$(dirname "$NODE22"):$PATH" npm test
-./node_modules/.bin/prettier --check release scripts/build-release.mjs \
-  scripts/verify-release.mjs tests/release/release-contract.test.mjs package.json
+./node_modules/.bin/prettier --check release/grok-runtime-v1.json \
+  scripts/build-release.mjs scripts/extract-grok-package.mjs scripts/verify-release.mjs \
+  tests/release/release-contract.test.mjs package.json
 git diff --check
-git add release scripts/build-release.mjs scripts/verify-release.mjs \
+git add release scripts/build-release.mjs scripts/extract-grok-package.mjs \
+  scripts/verify-release.mjs \
   tests/release/release-contract.test.mjs package.json
 git commit -m "feat: define immutable Grok runtime asset"
 ```
@@ -685,8 +690,9 @@ git commit -m "feat: run reviews from immutable Grok assets"
 
 **Interfaces:**
 
-- Consumes: exact branch HEAD and a temporary installation of
-  `@xai-official/grok@0.2.112` under a private temporary HOME.
+- Consumes: exact branch HEAD and the script-disabled, exact-integrity
+  `@xai-official/grok-darwin-arm64@0.2.112` platform tarball under a private
+  temporary HOME/cache. No package lifecycle hook executes.
 - Produces: a fresh raw verified release output and receipt bound to the exact
   role and commit; no tracked binary.
 
@@ -700,7 +706,7 @@ git diff --check
 
 Expected: clean branch and all source checks green.
 
-- [ ] **Step 2: Obtain the exact package in a private temporary HOME**
+- [ ] **Step 2: Obtain and extract the exact platform package without scripts**
 
 Run Steps 2 and 3 in this single fresh shell fragment so the verified input,
 fresh output path, and receipt cannot be swapped between invocations:
@@ -708,34 +714,75 @@ fresh output path, and receipt cannot be swapped between invocations:
 ```bash
 install -d -m 700 "$PRIVATE_ROOT/input" "$PRIVATE_ROOT/builds"
 PATH="$(dirname "$NODE22"):$PATH"
-BUILD_HOME="$(mktemp -d "$PRIVATE_ROOT/input/home.XXXXXX")"
-chmod 700 "$BUILD_HOME"
-HOME="$BUILD_HOME" npm_config_prefix="$BUILD_HOME/npm" \
-  npm install --global --no-audit --no-fund \
-  @xai-official/grok@0.2.112
-GROK_LINK="$BUILD_HOME/.grok/bin/grok"
-test -L "$GROK_LINK"
-GROK_INPUT="$(realpath "$GROK_LINK")"
-test "$GROK_INPUT" = "$BUILD_HOME/.grok/bin/grok-0.2.112"
+NODE_ROOT="$(cd "$(dirname "$NODE22")/.." && pwd -P)"
+NPM_CLI="$NODE_ROOT/lib/node_modules/npm/bin/npm-cli.js"
+test "$("$NODE22" "$NPM_CLI" --version)" = "10.9.2"
+EXPECTED_SRI='sha512-VfKESr9UU+DN0X892+dMjFq56vQt6QwbjETtGkMztpby43tNFoZwXvVG2x1z79ko5/qq1aMZhdMJYGc8Mljkrg=='
+PACKAGE_ROOT="$PRIVATE_ROOT/input/platform-package-36f4aedb29affafaca63bb47be8cf3f918fc2350ff6920d43b5e473ab22b327f"
+if test ! -e "$PACKAGE_ROOT"; then
+  mkdir -m 700 "$PACKAGE_ROOT"
+  mkdir -m 700 "$PACKAGE_ROOT/home" "$PACKAGE_ROOT/cache"
+  PACK_JSON="$(
+    env -i \
+      HOME="$PACKAGE_ROOT/home" \
+      LANG=C \
+      PATH="$NODE_ROOT/bin:/usr/bin:/bin" \
+      npm_config_cache="$PACKAGE_ROOT/cache" \
+      npm_config_ignore_scripts=true \
+      npm_config_update_notifier=false \
+      "$NODE22" "$NPM_CLI" pack \
+        '@xai-official/grok-darwin-arm64@0.2.112' \
+        --ignore-scripts \
+        --registry=https://registry.npmjs.org/ \
+        --pack-destination "$PACKAGE_ROOT" \
+        --json
+  )"
+  printf %s "$PACK_JSON" | "$NODE22" -e '
+    const fs = require("node:fs");
+    const result = JSON.parse(fs.readFileSync(0, "utf8"));
+    const item = Array.isArray(result) && result.length === 1 ? result[0] : null;
+    const expected = {
+      id: "@xai-official/grok-darwin-arm64@0.2.112",
+      name: "@xai-official/grok-darwin-arm64",
+      version: "0.2.112",
+      size: 37094207,
+      unpackedSize: 37113280,
+      shasum: "436870a7708674ca1848e4682abc9babf1380791",
+      integrity: process.argv[1],
+      filename: "xai-official-grok-darwin-arm64-0.2.112.tgz",
+      entryCount: 4,
+    };
+    if (!item) process.exit(1);
+    for (const [key, value] of Object.entries(expected)) {
+      if (item[key] !== value) process.exit(1);
+    }
+    if (!Array.isArray(item.bundled) || item.bundled.length !== 0) process.exit(1);
+  ' "$EXPECTED_SRI"
+fi
+test -d "$PACKAGE_ROOT" && test ! -L "$PACKAGE_ROOT"
+test "$(stat -f %Lp "$PACKAGE_ROOT")" = "700"
+TARBALL="$PACKAGE_ROOT/xai-official-grok-darwin-arm64-0.2.112.tgz"
+test -f "$TARBALL" && test ! -L "$TARBALL"
+test "$(stat -f %z "$TARBALL")" = "37094207"
+test "$(shasum -a 256 "$TARBALL" | awk '{print $1}')" = \
+  "36f4aedb29affafaca63bb47be8cf3f918fc2350ff6920d43b5e473ab22b327f"
+test "$(shasum -a 512 "$TARBALL" | awk '{print $1}')" = \
+  "55f2844abf5453e0cdd17f3ddbe74c8c5ab9eaf42de90c1b8c44ed1a4333b696f2e37b4d1686705ef546db1d73efd928e7faaad5a31985d30960673c3258e4ae"
+INPUT_ROOT="$(mktemp -d "$PRIVATE_ROOT/input/extracted.XXXXXX")"
+chmod 700 "$INPUT_ROOT"
+GROK_INPUT="$INPUT_ROOT/grok-0.2.112-darwin-arm64"
+"$NODE22" scripts/extract-grok-package.mjs \
+  --package-tarball "$TARBALL" \
+  --out "$GROK_INPUT"
 "$NODE22" --input-type=module - "$GROK_INPUT" <<'NODE'
 import { lstatSync } from "node:fs";
-const path = process.argv[2];
-const stat = lstatSync(path);
+const stat = lstatSync(process.argv[2]);
 if (!stat.isFile() || stat.isSymbolicLink()) process.exit(1);
-if (stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0) process.exit(1);
+if (stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o500) process.exit(1);
 NODE
 test "$(stat -f %z "$GROK_INPUT")" = "129363664"
 test "$(shasum -a 256 "$GROK_INPUT" | awk '{print $1}')" = \
   "5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4"
-PINNED_INPUT="$PRIVATE_ROOT/input/grok-0.2.112-darwin-arm64"
-if test ! -e "$PINNED_INPUT"; then
-  install -m 500 "$GROK_INPUT" "$PINNED_INPUT"
-fi
-test -f "$PINNED_INPUT" && test ! -L "$PINNED_INPUT"
-test "$(stat -f %z "$PINNED_INPUT")" = "129363664"
-test "$(shasum -a 256 "$PINNED_INPUT" | awk '{print $1}')" = \
-  "5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4"
-GROK_INPUT="$PINNED_INPUT"
 BUILD_ROOT="$PRIVATE_ROOT/builds/branch-$RUNTIME_SHA"
 install -d -m 700 "$BUILD_ROOT"
 CANDIDATE_OUTPUT="$(mktemp -d "$BUILD_ROOT/output.XXXXXX")"
@@ -760,7 +807,9 @@ printf 'release_asset_verified commit=%s output=%s receipt=%s\n' \
 ```
 
 Expected: one exact official binary followed by `release_asset_verified`.
-This is the sole registry use; runtime jobs never perform it. The receipt binds
+This is the sole registry use; no install/postinstall/prepack hook runs, and
+runtime jobs never access the registry. The extractor also binds the exact
+upstream third-party notice. The receipt binds
 branch HEAD, git archive, asset digest/size/name, license digest, and notice
 digest. Preserve the printed private output/receipt paths only for review; the
 merged release rebuild creates a different directory and is authoritative for
@@ -834,13 +883,26 @@ git pull --ff-only origin main
 MERGED_SHA="$(git rev-parse HEAD)"
 test -z "$(git status --porcelain=v1 --untracked-files=no)"
 PATH="$(dirname "$NODE22"):$PATH" npm run check
-GROK_INPUT="$PRIVATE_ROOT/input/grok-0.2.112-darwin-arm64"
+PACKAGE_ROOT="$PRIVATE_ROOT/input/platform-package-36f4aedb29affafaca63bb47be8cf3f918fc2350ff6920d43b5e473ab22b327f"
+test -d "$PACKAGE_ROOT" && test ! -L "$PACKAGE_ROOT"
+test "$(stat -f %Lp "$PACKAGE_ROOT")" = "700"
+TARBALL="$PACKAGE_ROOT/xai-official-grok-darwin-arm64-0.2.112.tgz"
+test -f "$TARBALL" && test ! -L "$TARBALL"
+test "$(stat -f %z "$TARBALL")" = "37094207"
+test "$(shasum -a 256 "$TARBALL" | awk '{print $1}')" = \
+  "36f4aedb29affafaca63bb47be8cf3f918fc2350ff6920d43b5e473ab22b327f"
+MERGED_BUILD_ROOT="$PRIVATE_ROOT/builds/merged-$MERGED_SHA"
+install -d -m 700 "$MERGED_BUILD_ROOT"
+MERGED_INPUT_ROOT="$(mktemp -d "$MERGED_BUILD_ROOT/input.XXXXXX")"
+chmod 700 "$MERGED_INPUT_ROOT"
+GROK_INPUT="$MERGED_INPUT_ROOT/grok-0.2.112-darwin-arm64"
+"$NODE22" scripts/extract-grok-package.mjs \
+  --package-tarball "$TARBALL" \
+  --out "$GROK_INPUT"
 test -f "$GROK_INPUT" && test ! -L "$GROK_INPUT"
 test "$(stat -f %z "$GROK_INPUT")" = "129363664"
 test "$(shasum -a 256 "$GROK_INPUT" | awk '{print $1}')" = \
   "5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4"
-MERGED_BUILD_ROOT="$PRIVATE_ROOT/builds/merged-$MERGED_SHA"
-install -d -m 700 "$MERGED_BUILD_ROOT"
 MERGED_OUTPUT="$(mktemp -d "$MERGED_BUILD_ROOT/output.XXXXXX")"
 chmod 700 "$MERGED_OUTPUT"
 MERGED_RECEIPT="$MERGED_BUILD_ROOT/receipt.$(basename "$MERGED_OUTPUT").json"

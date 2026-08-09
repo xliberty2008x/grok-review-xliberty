@@ -8,12 +8,19 @@
     "size": 129363664,
     "sha256": "5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4",
     "package_integrity_sha256": "49862ac444a3ca9db560cac29c96b5f2503b4b004a61ac9ac64a558842398143",
-    "package_git_commit": "9bbd559437aaef77f2830978da7fcc8f59b07e33"
+    "package_git_commit": "9bbd559437aaef77f2830978da7fcc8f59b07e33",
+    "platform_package_name": "@xai-official/grok-darwin-arm64",
+    "platform_package_tarball_size": 37094207,
+    "platform_package_tarball_sha256": "36f4aedb29affafaca63bb47be8cf3f918fc2350ff6920d43b5e473ab22b327f",
+    "platform_package_integrity_sha256": "633371990f1ed70635bfd160ba56545b344d9d3c4dfa74c9afebe4513dba3086",
+    "platform_package_member": "package/bin/grok.br",
+    "platform_package_notice_member": "package/THIRD_PARTY_NOTICES.md",
+    "platform_package_notice_size": 7995
   },
   "notice": {
     "source_path": "release/THIRD_PARTY_NOTICES.md",
     "asset_name": "THIRD_PARTY_NOTICES.md",
-    "sha256": "8ce6186eb72090f0d8cf6b1c38f9ac9874e0739886bbf379b389097c84b7b937"
+    "sha256": "e8785a6098a7ee780cd2db35745b8e53061cfb1b6da19147a308579466ea4e50"
   },
   "license": {
     "spdx": "Apache-2.0",

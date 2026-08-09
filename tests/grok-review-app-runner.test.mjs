@@ -736,6 +736,47 @@ test("validated same-hunk suggestion becomes a native GitHub suggestion", async 
   );
 });
 
+test("publication 422 identifies create versus submit without exposing response content", async (t) => {
+  const github422 = () => {
+    const error = new Error("private GitHub response must not escape");
+    error.code = "github_http_422";
+    return error;
+  };
+  for (const [stage, expectedCode] of [
+    ["create", "create_pending_review_http_422"],
+    ["submit", "submit_pending_review_http_422"],
+  ]) {
+    await t.test(stage, async () => {
+      const harness = makeHarness();
+      if (stage === "create") {
+        harness.deps.createPendingReview = async () => {
+          throw github422();
+        };
+      } else {
+        harness.deps.submitPendingReview = async () => {
+          throw github422();
+        };
+      }
+      await assert.rejects(
+        runCentralReview(
+          {
+            inputs: inputs(),
+            config: config(),
+            callback: harness.callback,
+          },
+          harness.deps,
+        ),
+        (error) =>
+          error.code === "central_runner_failed" &&
+          error.causeCode === expectedCode &&
+          !String(error).includes("private GitHub response"),
+      );
+      assert.ok(harness.events.includes("check:complete:failure"));
+      assert.ok(harness.events.includes("callback:terminal:failed"));
+    });
+  }
+});
+
 test("manual review snapshots and collects the live current head", async () => {
   const harness = makeHarness({
     triggerKind: "manual_comment",

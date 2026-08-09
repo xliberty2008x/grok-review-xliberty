@@ -3,8 +3,9 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 import {
@@ -33,12 +34,13 @@ const MANIFEST_PATH = path.join(ROOT, "release", "grok-runtime-v1.json");
 const NOTICE_PATH = path.join(ROOT, "release", "THIRD_PARTY_NOTICES.md");
 const LICENSE_PATH = path.join(ROOT, "LICENSE");
 const BUILD_SOURCE = path.join(ROOT, "scripts", "build-release.mjs");
+const EXTRACT_SOURCE = path.join(ROOT, "scripts", "extract-grok-package.mjs");
 const VERIFY_SOURCE = path.join(ROOT, "scripts", "verify-release.mjs");
 
 const EXPECTED_ASSET_SHA256 =
   "5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4";
 const EXPECTED_NOTICE_SHA256 =
-  "8ce6186eb72090f0d8cf6b1c38f9ac9874e0739886bbf379b389097c84b7b937";
+  "e8785a6098a7ee780cd2db35745b8e53061cfb1b6da19147a308579466ea4e50";
 const EXPECTED_LICENSE_SHA256 =
   "f342b45da3700cc2a823c3843b31ce55307824fb5f7e84e1de39bf8e19deb9bf";
 
@@ -128,10 +130,137 @@ test("closed manifest records the pinned darwin-arm64 runtime asset", () => {
     manifest.asset.package_git_commit,
     "9bbd559437aaef77f2830978da7fcc8f59b07e33",
   );
+  assert.equal(
+    manifest.asset.platform_package_name,
+    "@xai-official/grok-darwin-arm64",
+  );
+  assert.equal(manifest.asset.platform_package_tarball_size, 37094207);
+  assert.equal(
+    manifest.asset.platform_package_tarball_sha256,
+    "36f4aedb29affafaca63bb47be8cf3f918fc2350ff6920d43b5e473ab22b327f",
+  );
+  assert.equal(
+    manifest.asset.platform_package_integrity_sha256,
+    "633371990f1ed70635bfd160ba56545b344d9d3c4dfa74c9afebe4513dba3086",
+  );
+  assert.equal(manifest.asset.platform_package_member, "package/bin/grok.br");
+  assert.equal(
+    manifest.asset.platform_package_notice_member,
+    "package/THIRD_PARTY_NOTICES.md",
+  );
+  assert.equal(manifest.asset.platform_package_notice_size, 7995);
   assert.equal(manifest.notice.sha256, EXPECTED_NOTICE_SHA256);
   assert.equal(manifest.license.sha256, EXPECTED_LICENSE_SHA256);
   assert.equal(manifest.license.spdx, "Apache-2.0");
   assert.deepEqual(manifest, CLOSED_MANIFEST);
+});
+
+test("script-disabled package extraction verifies bytes without running lifecycle code", async (t) => {
+  let extractVerifiedPackage = null;
+  try {
+    ({ _extractVerifiedPackage: extractVerifiedPackage } = await import(
+      pathToFileURL(EXTRACT_SOURCE).href
+    ));
+  } catch {
+    // RED until the bounded extractor exists.
+  }
+  assert.equal(
+    typeof extractVerifiedPackage,
+    "function",
+    "the verified package extractor must exist",
+  );
+
+  const staging = privateTempDir(t, "grok-package-extract-");
+  const sourceRoot = path.join(staging, "source");
+  const packageBin = path.join(sourceRoot, "package", "bin");
+  fs.mkdirSync(packageBin, { recursive: true, mode: 0o700 });
+  const assetBytes = Buffer.from("verified-grok-fixture\n");
+  fs.writeFileSync(
+    path.join(packageBin, "grok.br"),
+    zlib.brotliCompressSync(assetBytes),
+    { mode: 0o600 },
+  );
+  const lifecycleCanary = path.join(staging, "lifecycle-ran");
+  fs.writeFileSync(
+    path.join(packageBin, "postinstall.js"),
+    `require("node:fs").writeFileSync(${JSON.stringify(lifecycleCanary)}, "bad");\n`,
+    { mode: 0o600 },
+  );
+  fs.writeFileSync(
+    path.join(sourceRoot, "package", "package.json"),
+    `${JSON.stringify({ scripts: { postinstall: "node bin/postinstall.js" } })}\n`,
+    { mode: 0o600 },
+  );
+  const noticeBytes = Buffer.from("verified upstream notices\n");
+  fs.writeFileSync(
+    path.join(sourceRoot, "package", "THIRD_PARTY_NOTICES.md"),
+    noticeBytes,
+    { mode: 0o600 },
+  );
+
+  const packageTarball = path.join(staging, "package.tgz");
+  const packed = spawnSync(
+    "/usr/bin/tar",
+    ["-czf", packageTarball, "-C", sourceRoot, "package"],
+    { encoding: "utf8", maxBuffer: 1024 * 1024 },
+  );
+  assert.equal(packed.status, 0, packed.stderr);
+  fs.chmodSync(packageTarball, 0o600);
+
+  const outDir = emptyOwnedOutDir(t);
+  const outFile = path.join(outDir, "verified-grok");
+  const packageBytes = fs.readFileSync(packageTarball);
+  const extractArgs = {
+    packageTarball,
+    outFile,
+    memberPath: "package/bin/grok.br",
+    noticeMemberPath: "package/THIRD_PARTY_NOTICES.md",
+    expectedPackage: {
+      size: packageBytes.length,
+      sha256: sha256(packageBytes),
+    },
+    expectedAsset: {
+      size: assetBytes.length,
+      sha256: sha256(assetBytes),
+    },
+    expectedNotice: {
+      size: noticeBytes.length,
+      sha256: sha256(noticeBytes),
+    },
+    tarBin: "/usr/bin/tar",
+  };
+  assert.throws(
+    () =>
+      extractVerifiedPackage({
+        ...extractArgs,
+        memberPath: "--version",
+      }),
+    /release_args_invalid/,
+  );
+  assert.equal(fs.existsSync(outFile), false);
+  assert.throws(
+    () =>
+      extractVerifiedPackage({
+        ...extractArgs,
+        expectedNotice: {
+          ...extractArgs.expectedNotice,
+          sha256: "0".repeat(64),
+        },
+      }),
+    /release_notice_digest_mismatch/,
+  );
+  assert.equal(fs.existsSync(outFile), false);
+  const result = extractVerifiedPackage({
+    ...extractArgs,
+  });
+
+  assert.equal(
+    result.outFile,
+    path.join(fs.realpathSync(outDir), path.basename(outFile)),
+  );
+  assert.deepEqual(fs.readFileSync(outFile), assetBytes);
+  assert.equal(fs.statSync(outFile).mode & 0o777, 0o500);
+  assert.equal(fs.existsSync(lifecycleCanary), false);
 });
 
 test("source-only verification accepts only the closed notice and license bytes", async (t) => {
@@ -418,7 +547,7 @@ test("git archive ignores replacement refs while HEAD remains the requested comm
 });
 
 test("release scripts never invoke npm, curl, gh, or a network URL", () => {
-  for (const filePath of [BUILD_SOURCE, VERIFY_SOURCE]) {
+  for (const filePath of [BUILD_SOURCE, EXTRACT_SOURCE, VERIFY_SOURCE]) {
     const source = fs.readFileSync(filePath, "utf8");
     assert.doesNotMatch(source, /\bnpm\b/);
     assert.doesNotMatch(source, /\bcurl\b/);

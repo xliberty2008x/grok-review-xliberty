@@ -66,13 +66,22 @@ asset named `grok-0.2.112-darwin-arm64` with:
   `49862ac444a3ca9db560cac29c96b5f2503b4b004a61ac9ac64a558842398143`;
 - package git commit `9bbd559437aaef77f2830978da7fcc8f59b07e33`.
 
+The release input is acquired from the exact
+`@xai-official/grok-darwin-arm64@0.2.112` platform tarball with lifecycle
+scripts disabled. Its 37,094,207 bytes and SHA-256
+`36f4aedb29affafaca63bb47be8cf3f918fc2350ff6920d43b5e473ab22b327f`
+are verified before a code-owned extractor reads only the pinned Brotli member.
+The extractor also verifies and preserves the tarball's exact 7,995-byte
+`THIRD_PARTY_NOTICES.md`. The wrapper package's `postinstall` is never run.
+
 The workflow downloads that exact asset from its own immutable release using
 the job’s read-only `GITHUB_TOKEN`, verifies one bounded regular file, exact
 size, and exact SHA-256, applies mode `0500`, and then runs the existing
 `attestLocalGrok()` release-identity check. It performs no npm install.
 
-`release/grok-runtime-v1.json`, `scripts/build-release.mjs`, and
-`scripts/verify-release.mjs` own the repeatable asset contract. The builder
+`release/grok-runtime-v1.json`, `scripts/extract-grok-package.mjs`,
+`scripts/build-release.mjs`, and `scripts/verify-release.mjs` own the
+repeatable asset contract. The builder
 accepts an already-obtained pinned executable; it never resolves `latest` or
 downloads an executable itself. The verifier checks the manifest, asset,
 runtime archive digest, and immutable tag inputs.
