@@ -23,10 +23,12 @@ import {
   casMarkFailedDispatch,
   claimWorkflowRunOrEnqueueOrphan,
   completeOutboxJob,
+  getControlState,
   getRequestById,
   isRetryableDispatchStatus,
   leaseOutboxJobs,
   listStaleActiveRequests,
+  mayExecuteLeasedOutboxJob,
   repairOutboxJobs,
   rescheduleOutboxJob,
   supersedePrRequestsWithOutbox
@@ -46,7 +48,32 @@ const SAFE_OUTBOX_ERRORS = Object.freeze({
   DISPATCH_HTTP: "dispatch_http",
   DISPATCH_RESPONSE: "dispatch_response",
   CANCEL_NETWORK: "cancel_network",
-  CANCEL_HTTP: "cancel_http"
+  CANCEL_HTTP: "cancel_http",
+  CUTOVER_EPOCH_CHANGED: "cutover_epoch_changed"
+});
+
+const ZERO_OUTBOX_STATS = Object.freeze({
+  leased: 0,
+  completed: 0,
+  retried: 0,
+  obsolete: 0,
+  orphaned: 0
+});
+
+const ZERO_DRAIN_STATS = Object.freeze({
+  batches: 0,
+  leased: 0,
+  completed: 0,
+  retried: 0,
+  obsolete: 0,
+  orphaned: 0
+});
+
+const ZERO_WATCHDOG_STATS = Object.freeze({
+  scanned: 0,
+  terminalized: 0,
+  stillRunning: 0,
+  errors: 0
 });
 
 function iso(ms) {
@@ -117,7 +144,30 @@ async function retryJob(env, job, owner, nowMs, errorCode) {
   });
 }
 
-async function processDispatchJob(env, job, owner, nowMs, fetchImpl) {
+async function rejectStaleCutoverJob(env, job, owner, epoch, nowMs) {
+  const allowed = await mayExecuteLeasedOutboxJob(env.DB, {
+    jobId: job.job_id,
+    leaseOwner: owner,
+    epoch
+  });
+  if (allowed) return false;
+  try {
+    await retryJob(
+      env,
+      job,
+      owner,
+      nowMs,
+      SAFE_OUTBOX_ERRORS.CUTOVER_EPOCH_CHANGED
+    );
+  } catch {
+    // The lease fence already denied external work. A failed owner-fenced
+    // reschedule must not fall through to a second retry with a different
+    // error code; lease expiry remains the recovery path.
+  }
+  return true;
+}
+
+async function processDispatchJob(env, job, owner, epoch, nowMs, fetchImpl) {
   const request = await getRequestById(env.DB, job.request_id);
   if (
     !request
@@ -132,6 +182,10 @@ async function processDispatchJob(env, job, owner, nowMs, fetchImpl) {
   if (!controlConfigReady(config)) {
     await casMarkFailedDispatch(env.DB, request.request_id, iso(nowMs));
     await retryJob(env, job, owner, nowMs, SAFE_OUTBOX_ERRORS.MISCONFIGURED);
+    return "retried";
+  }
+
+  if (await rejectStaleCutoverJob(env, job, owner, epoch, nowMs)) {
     return "retried";
   }
 
@@ -188,10 +242,13 @@ async function processDispatchJob(env, job, owner, nowMs, fetchImpl) {
   return claim === "claimed" ? "completed" : "orphaned";
 }
 
-async function processCancelJob(env, job, owner, nowMs, fetchImpl) {
+async function processCancelJob(env, job, owner, epoch, nowMs, fetchImpl) {
   const config = controlRepoConfig(env);
   if (!controlConfigReady(config)) {
     await retryJob(env, job, owner, nowMs, SAFE_OUTBOX_ERRORS.MISCONFIGURED);
+    return "retried";
+  }
+  if (await rejectStaleCutoverJob(env, job, owner, epoch, nowMs)) {
     return "retried";
   }
   const result = await cancelWorkflowRun({
@@ -211,13 +268,16 @@ async function processCancelJob(env, job, owner, nowMs, fetchImpl) {
   return "retried";
 }
 
-async function processLeasedJob(env, job, owner, nowMs, fetchImpl) {
+async function processLeasedJob(env, job, owner, epoch, nowMs, fetchImpl) {
   try {
+    if (await rejectStaleCutoverJob(env, job, owner, epoch, nowMs)) {
+      return "retried";
+    }
     if (job.job_type === OUTBOX_JOB_TYPE.DISPATCH) {
-      return await processDispatchJob(env, job, owner, nowMs, fetchImpl);
+      return await processDispatchJob(env, job, owner, epoch, nowMs, fetchImpl);
     }
     if (job.job_type === OUTBOX_JOB_TYPE.CANCEL) {
-      return await processCancelJob(env, job, owner, nowMs, fetchImpl);
+      return await processCancelJob(env, job, owner, epoch, nowMs, fetchImpl);
     }
     await retryJob(env, job, owner, nowMs, SAFE_OUTBOX_ERRORS.INTERNAL);
     return "retried";
@@ -235,12 +295,18 @@ export async function processOutbox(env, options = {}) {
   const nowMs = Number.isFinite(options.nowMs) ? Number(options.nowMs) : Date.now();
   const now = iso(nowMs);
   const owner = leaseOwner(options.workerId, nowMs);
-  await repairOutboxJobs(env.DB, now);
+  const control = await getControlState(env.DB);
+  if (control.paused || control.epoch < 1) {
+    return { ...ZERO_OUTBOX_STATS };
+  }
+  const epoch = control.epoch;
+  await repairOutboxJobs(env.DB, now, epoch);
   const leased = await leaseOutboxJobs(env.DB, {
     now,
     leaseOwner: owner,
     leaseExpiresAt: iso(nowMs + OUTBOX_LEASE_MS),
-    limit: boundedBatchSize(options.batchSize)
+    limit: boundedBatchSize(options.batchSize),
+    epoch
   });
   const stats = {
     leased: leased.length,
@@ -254,6 +320,7 @@ export async function processOutbox(env, options = {}) {
       env,
       job,
       owner,
+      epoch,
       nowMs,
       options.fetchImpl
     );
@@ -298,6 +365,11 @@ export async function processWorkflowWatchdog(env, options = {}) {
   const staleMs = Number.isFinite(options.staleMs) && Number(options.staleMs) >= WATCHDOG_STALE_MS
     ? Number(options.staleMs)
     : WATCHDOG_STALE_MS;
+  const control = await getControlState(env.DB);
+  if (control.paused || control.epoch < 1) {
+    return { ...ZERO_WATCHDOG_STATS };
+  }
+  const observedEpoch = control.epoch;
   const config = controlRepoConfig(env);
   const stats = { scanned: 0, terminalized: 0, stillRunning: 0, errors: 0 };
   if (!controlConfigReady(config)) {
@@ -310,6 +382,10 @@ export async function processWorkflowWatchdog(env, options = {}) {
     WATCHDOG_BATCH_SIZE
   );
   for (const row of rows) {
+    const gate = await getControlState(env.DB);
+    if (gate.paused || gate.epoch !== observedEpoch) {
+      break;
+    }
     stats.scanned += 1;
     const run = await fetchWorkflowRun({
       token: config.token,
@@ -342,6 +418,13 @@ export async function processWorkflowWatchdog(env, options = {}) {
 }
 
 export async function runScheduledMaintenance(env, options = {}) {
+  const control = await getControlState(env.DB);
+  if (control.paused || control.epoch < 1) {
+    return {
+      outbox: { ...ZERO_DRAIN_STATS },
+      watchdog: { ...ZERO_WATCHDOG_STATS }
+    };
+  }
   const outbox = await drainOutbox(env, options);
   const watchdog = await processWorkflowWatchdog(env, options);
   return { outbox, watchdog };

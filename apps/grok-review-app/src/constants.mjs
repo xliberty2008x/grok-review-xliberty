@@ -150,3 +150,9 @@ export const ALLOWED_JSON_CONTENT_TYPES = Object.freeze([
   "application/json; charset=utf-8",
   "application/json;charset=utf-8"
 ]);
+
+/** Durable singleton key for the dispatch cutover gate. */
+export const CONTROL_STATE_KEY = "dispatch_gate";
+
+/** Exact lowercase 40-hex runtime identity required on health responses. */
+export const RUNTIME_COMMIT_HEX_RE = /^[0-9a-f]{40}$/;

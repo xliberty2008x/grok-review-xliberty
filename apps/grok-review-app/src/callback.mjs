@@ -313,17 +313,38 @@ function receiptBoundToRequest(receipt, requestRow, callback) {
 }
 
 /**
+ * Closed callback secret list. Primary is required; optional next is absent
+ * only when null/undefined/empty. Any other invalid next value is misconfigured.
+ * @param {object} env
+ * @returns {{ ok: true, secrets: string[] } | { ok: false, reason: "misconfigured" }}
+ */
+function callbackSecrets(env) {
+  const primary = env?.RUNNER_CALLBACK_SECRET;
+  if (!isValidSharedSecret(primary)) {
+    return { ok: false, reason: "misconfigured" };
+  }
+  const next = env?.RUNNER_CALLBACK_SECRET_NEXT;
+  if (next == null || next === "") {
+    return { ok: true, secrets: [primary] };
+  }
+  if (!isValidSharedSecret(next)) {
+    return { ok: false, reason: "misconfigured" };
+  }
+  return { ok: true, secrets: [primary, next] };
+}
+
+/**
  * @param {Request} request
  * @param {object} env
- * @param {{ nowMs?: number }} [options]
+ * @param {{ nowMs?: number, verifyCallbackSignature?: typeof verifyCallbackSignature256 }} [options]
  */
 export async function handleCallback(request, env, options = {}) {
   if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
   if (!isAllowedJsonContentType(request.headers.get("content-type"))) {
     return errorResponse(415, "unsupported_media_type");
   }
-  const secret = env.RUNNER_CALLBACK_SECRET;
-  if (!isValidSharedSecret(secret)) {
+  const secretsResult = callbackSecrets(env);
+  if (!secretsResult.ok) {
     logSafe("error", "callback_secret_invalid", {});
     return errorResponse(500, "misconfigured");
   }
@@ -339,13 +360,25 @@ export async function handleCallback(request, env, options = {}) {
     );
   }
   const rawBody = bodyResult.bytes;
-  if (!await verifyCallbackSignature256(
-    rawBody,
-    auth.timestamp,
-    auth.nonce,
-    auth.signature,
-    secret
-  )) {
+  const verifySignature =
+    typeof options.verifyCallbackSignature === "function"
+      ? options.verifyCallbackSignature
+      : verifyCallbackSignature256;
+  const settled = await Promise.allSettled(
+    secretsResult.secrets.map((secret) =>
+      verifySignature(
+        rawBody,
+        auth.timestamp,
+        auth.nonce,
+        auth.signature,
+        secret
+      )
+    )
+  );
+  const authorized = settled.some(
+    (result) => result.status === "fulfilled" && result.value === true
+  );
+  if (!authorized) {
     logSafe("error", "callback_signature_invalid", {});
     return errorResponse(401, "unauthorized");
   }

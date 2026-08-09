@@ -1,4 +1,4 @@
-name: Grok Review App worker (staging)
+name: Grok Review App worker (production)
 
 on:
   workflow_dispatch:
@@ -39,13 +39,13 @@ concurrency:
   # Never let an unverified manual/check dispatch cancel another request.
   # Cross-request supersession is authorized and fenced by D1; this group only
   # coalesces ambiguous duplicate dispatches for the same immutable request.
-  group: grok-review-request-staging-${{ inputs.request_id }}
+  group: grok-review-request-production-${{ inputs.request_id }}
   cancel-in-progress: false
 
 jobs:
   review:
     runs-on: macos-latest
-    environment: review-staging-runtime
+    environment: review-production-runtime
     timeout-minutes: 30
     steps:
       - name: Check out exact trusted runtime

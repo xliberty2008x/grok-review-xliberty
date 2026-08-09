@@ -241,3 +241,93 @@ The transported source is
 `aee1171c2f346948feb2864784e13abe020dcb34`. Prior live evidence for
 `ea3594fb1f7cc546ede6d3dca2282860e54b8721` is provenance only; the new
 repository remains unqualified until `terminal_receipt_committed`.
+
+## Task 1 production cutover: App operations and regression ownership
+
+### Frozen hosted App source (`xliberty2008x/grok-plugin` / `grok-plugin-e2e`)
+
+- Exact revision: `aee1171c2f346948feb2864784e13abe020dcb34`.
+- Inspected / copied paths:
+  `apps/grok-review-app/README.md`,
+  `docs/operations/private-grok-review-app.md`,
+  `scripts/sync-grok-ci-auth.mjs`,
+  `scripts/install-grok-ci-auth-sync.mjs`,
+  `tests/ci-auth-sync.test.mjs`,
+  `tests/grok-review-app-worker.test.mjs`,
+  `tests/grok-review-app-github.test.mjs`,
+  `tests/grok-review-app-runner.test.mjs`,
+  and `tests/grok-review-app-target-collector.test.mjs`.
+- Useful invariant: operations and regression ownership move before old-host
+  removal.
+- Local adaptation: repository name
+  (`xliberty2008x/grok-plugin` → `xliberty2008x/grok-review-xliberty` in
+  operational documentation) and a pinned deployment invocation:
+  `evidence/private/vertical-staging/toolchains/node-v22.17.1-darwin-arm64/bin/node`
+  executes only
+  `$TARGET_ROOT/node_modules/wrangler/bin/wrangler.js` (Wrangler
+  `4.120.0`); Prettier also normalizes the existing credential table so the
+  standalone operations-document gate is enforceable.
+- Rejected or missing pattern: do not keep the watcher owned by a checkout that
+  will be deleted.
+
+### `openai/codex-plugin-cc`
+
+- Exact revision: `db52e28f4d9ded852ab3942cea316258ae4ef346`.
+- Inspected files: marketplace/plugin manifests, `commands/review.md`,
+  `broker-lifecycle.mjs`, and `session-lifecycle-hook.mjs`.
+- Useful invariant: the public integration stays thin while runtime-owned code
+  holds durable lifecycle and identity.
+- Local adaptation: this repository owns App operations, the auth watcher, and
+  the existing App regression suites; targets install only the GitHub App.
+- Rejected or missing pattern: local best-effort cleanup does not authorize
+  deleting a still-authoritative host before ownership has moved.
+
+### `xai-org/grok-build`
+
+- Exact revisions: contract audit
+  `47348d13ec4508dcfe440e34c6d511bb02998fb2`; current-source check
+  `afbc0fb710320c7add294c2106d447ecc3e3af2e`.
+- Inspected files: generated package/launcher, owner-scoped cancellation,
+  leader lock, and authentication storage.
+- Useful invariant: isolate auth homes and attest executables before provider
+  work; keep cancellation owner-scoped.
+- Local adaptation: the moved auth watcher remains the only central
+  `GROK_AUTH_JSON` owner after cutover and continues to fail closed on stale or
+  unsafe material.
+- Rejected or missing pattern: embedded ACP is not a hosted App operations or
+  auth-watcher model.
+
+## Task 3 production cutover: durable pause epoch and callback-key overlap
+
+### `openai/codex-plugin-cc`
+
+- Exact revision: `db52e28f4d9ded852ab3942cea316258ae4ef346`.
+- Inspected files: `plugins/codex/scripts/lib/broker-lifecycle.mjs` and
+  `plugins/codex/scripts/session-lifecycle-hook.mjs`.
+- Useful invariant: durable lifecycle identity must be established and checked
+  before an external side effect proceeds.
+- Local adaptation: the hosted Worker owns a D1 singleton `control_state` gate
+  and SQL/pre-network fences so repair, lease, watchdog, and GitHub work stop
+  on pause or epoch change without discarding admitted webhook work.
+- Rejected or missing pattern: local best-effort teardown or in-process state
+  clearing is not a substitute for a durable hosted cutover gate.
+
+### `xai-org/grok-build`
+
+- Exact revisions: contract audit
+  `47348d13ec4508dcfe440e34c6d511bb02998fb2`; current-source check
+  `afbc0fb710320c7add294c2106d447ecc3e3af2e`.
+- Inspected files:
+  `crates/codegen/xai-grok-shell/src/session/acp_session_impl/tasks_cancel.rs`
+  and `crates/codegen/xai-grok-shell/src/leader/lock.rs`.
+- Useful invariant: cancellation and exclusive work remain bound to the
+  authoritative owner identity before the side effect runs.
+- Local adaptation: outbox jobs re-check the exact leased owner plus the
+  unpaused cutover epoch immediately before `dispatchWorkflow` /
+  `cancelWorkflowRun`, and owner-fenced reschedule uses
+  `cutover_epoch_changed` without rewriting a replacement owner's lease.
+- Rejected or missing pattern: in-memory actor flags and embedded ACP are not a
+  durable cross-invocation pause for a multi-invocation Worker/D1 control plane.
+
+This inspection is design evidence only. It does not qualify a live D1, Worker,
+GitHub, Cloudflare, or provider lifecycle.
