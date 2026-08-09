@@ -594,7 +594,8 @@ git commit -m "feat: add production cutover bridge"
 
 **Files:**
 
-- Delete: `.github/workflows/grok-review-app-worker.yml`
+- Retain temporarily: `.github/workflows/grok-review-app-worker.yml` as a
+  byte-identical pre-merge alias of the staging runner
 - Create: `.github/workflows/grok-review-app-worker-staging.yml`
 - Create: `.github/workflows/grok-review-app-worker-production.yml`
 - Modify: `tests/grok-review-app-runner.test.mjs`
@@ -604,7 +605,9 @@ git commit -m "feat: add production cutover bridge"
 
 - Consumes: immutable release tag and environment variables.
 - Produces: two exact seven-input workflows whose only behavioral difference
-  is literal environment name.
+  is literal environment name, plus the temporary staging alias required to
+  dispatch an immutable ref before the renamed path reaches the default
+  branch.
 
 - [ ] **Step 1: Write RED workflow-structure assertions**
 
@@ -870,6 +873,12 @@ surfaces, release download integrity, pause/epoch fencing, and callback
 overlap. Resolve every blocking finding, rerun all evidence on the exact
 updated head, then merge without reusing stale evidence. This task does not add
 a new generic CI framework.
+
+If the staging path is not yet registered on the default branch, point the
+staging Worker at the byte-identical legacy-path alias and cut a new immutable
+tag. Do not rewrite an existing tag and do not merge merely to make the renamed
+workflow discoverable. After merge, switch back to the renamed path, prove one
+exact-ref dispatch through it, and remove the alias in a later tag.
 
 - [ ] **Step 3: Rebuild from the exact merged commit**
 

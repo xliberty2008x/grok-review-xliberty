@@ -145,6 +145,11 @@ Two static dispatch workflows own the runner entrypoints:
 | `grok-review-app-worker-staging.yml`    | `review-staging-runtime`    |
 | `grok-review-app-worker-production.yml` | `review-production-runtime` |
 
+Before the renamed staging path is registered on the default branch,
+`grok-review-app-worker.yml` is a byte-identical staging alias for immutable
+pre-merge qualification. Remove it only after an exact-ref dispatch through
+the renamed staging path succeeds.
+
 Each workflow accepts the same seven closed `workflow_dispatch` inputs, checks
 out the immutable runtime tag, downloads and attests the exact release asset
 `grok-0.2.112-darwin-arm64` (size `129363664`, SHA-256

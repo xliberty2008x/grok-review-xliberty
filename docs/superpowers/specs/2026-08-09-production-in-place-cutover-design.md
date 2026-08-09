@@ -101,6 +101,14 @@ Create two static dispatch workflows:
 - `.github/workflows/grok-review-app-worker-production.yml`, bound to GitHub
   environment `review-production-runtime`.
 
+For pre-merge staging qualification, retain
+`.github/workflows/grok-review-app-worker.yml` as a byte-identical alias of the
+staging workflow. GitHub registers `workflow_dispatch` paths from the default
+branch, so the alias is the only path that can dispatch an unmerged immutable
+tag. After the renamed staging path is present on the default branch and one
+exact-ref dispatch succeeds through it, remove the alias in a later immutable
+tag.
+
 Both expose the same seven required `workflow_dispatch` inputs and call the
 same committed runner. Their environment names are literal, not input-driven.
 Each environment accepts only immutable `grok-review-runtime-*` tags.

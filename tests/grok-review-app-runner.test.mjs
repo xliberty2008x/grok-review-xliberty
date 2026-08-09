@@ -1354,13 +1354,9 @@ function assertStaticWorkflowContract(
   }
 }
 
-test("static staging and production workflows are dispatch-only seven-input environment-bound runners", () => {
+test("static workflows retain a byte-identical staging alias until the renamed path is registered on default", () => {
   const root = repoRoot();
   const workflowDir = path.join(root, ".github", "workflows");
-  assert.equal(
-    fs.existsSync(path.join(workflowDir, "grok-review-app-worker.yml")),
-    false,
-  );
   assert.deepEqual(
     fs
       .readdirSync(workflowDir)
@@ -1369,8 +1365,12 @@ test("static staging and production workflows are dispatch-only seven-input envi
     [
       "grok-review-app-worker-production.yml",
       "grok-review-app-worker-staging.yml",
+      "grok-review-app-worker.yml",
     ],
   );
+
+  const stagingWorkflow = readWorkflow("grok-review-app-worker-staging.yml");
+  assert.equal(readWorkflow("grok-review-app-worker.yml"), stagingWorkflow);
 
   const bodies = [];
   for (const entry of STATIC_WORKFLOWS) {

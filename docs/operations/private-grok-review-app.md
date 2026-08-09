@@ -61,6 +61,11 @@ Prepare these non-secret Worker vars:
   (the same commit as the immutable tag and Actions
   `GROK_REVIEW_RUNTIME_COMMIT`)
 
+During pre-merge staging qualification only, use
+`grok-review-app-worker.yml`, the byte-identical staging alias already
+registered on the default branch. Switch to the renamed staging path after
+merge and verify one exact-ref dispatch before removing the alias.
+
 Do not place real IDs, repository coordinates, deployed URLs, tokens, or keys in
 the repository. Keep environment-specific Wrangler configuration outside Git
 and set GitHub values through repository settings or `gh`.
