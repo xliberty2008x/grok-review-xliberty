@@ -331,3 +331,41 @@ repository remains unqualified until `terminal_receipt_committed`.
 
 This inspection is design evidence only. It does not qualify a live D1, Worker,
 GitHub, Cloudflare, or provider lifecycle.
+
+## Issue #4 model-input projection
+
+### `openai/codex-plugin-cc`
+
+- Exact revision: `db52e28f4d9ded852ab3942cea316258ae4ef346`.
+- Inspected files: `plugins/codex/commands/review.md` and
+  `plugins/codex/scripts/lib/broker-lifecycle.mjs`.
+- Useful invariant: the public review command remains thin, while the trusted
+  runtime owns provider launch and lifecycle state.
+- Local adaptation: the standalone host now derives a bounded UTF-8 model
+  projection from authoritative exact-head evidence and rejects it before the
+  provider dependency boundary; the signed receipt remains bound to the full
+  authoritative binary diff digest and byte count.
+- Rejected or missing pattern: the donor defines neither hosted binary-patch
+  projection nor a model-packet byte policy, so its thin command is not used as
+  authority for repository-controlled Git attributes or prompt admission.
+
+### `xai-org/grok-build`
+
+- Exact revisions: contract audit
+  `47348d13ec4508dcfe440e34c6d511bb02998fb2`; current-source check
+  `afbc0fb710320c7add294c2106d447ecc3e3af2e`.
+- Inspected files:
+  `crates/codegen/xai-grok-shell/src/session/acp_session_impl/tasks_cancel.rs`
+  and `crates/codegen/xai-grok-shell/src/leader/lock.rs`.
+- Useful invariant: task ownership and the exclusive runtime lock are
+  established before lifecycle operations cross their external boundary.
+- Local adaptation: model-packet size and content admission are host-owned
+  pre-provider fences; Grok execution keeps its existing isolated owner and
+  executable identity after admission succeeds.
+- Rejected or missing pattern: Grok Build supplies no hosted review-packet
+  shaping, Git-attribute neutralization, or provider-safe patch projection, so
+  embedded ACP and leader locking are not substitutes for this input gate.
+
+This inspection is design evidence only. Issue #4 remains unqualified until a
+real installed-App staging lifecycle reaches durable terminal receipt and
+App-authored review output.

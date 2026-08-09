@@ -51,6 +51,7 @@ import {
   UNTRUSTED_EVIDENCE_NOTICE
 } from "../apps/grok-review-app/src/actions/review-packet.mjs";
 import { collectExactHeadDiff } from "../apps/grok-review-app/src/actions/exact-head-diff.mjs";
+import { collectRightSideMap } from "../scripts/ci/lib/diff-right-lines.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GIT = resolveVerifiedGitExecutable();
@@ -61,7 +62,7 @@ function tempDir(prefix = "grok-collector-") {
   return dir;
 }
 
-function runGit(cwd, args, envExtra = {}) {
+function runGitBuffer(cwd, args, envExtra = {}) {
   const result = spawnSync(GIT, args, {
     cwd,
     env: {
@@ -80,7 +81,11 @@ function runGit(cwd, args, envExtra = {}) {
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr?.toString("utf8") || result.status}`);
   }
-  return result.stdout.toString("utf8").trim();
+  return result.stdout;
+}
+
+function runGit(cwd, args, envExtra = {}) {
+  return runGitBuffer(cwd, args, envExtra).toString("utf8").trim();
 }
 
 function runGitAsync(cwd, args, envExtra = {}) {
@@ -133,6 +138,63 @@ function write(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   if (Buffer.isBuffer(content)) fs.writeFileSync(file, content);
   else fs.writeFileSync(file, content, "utf8");
+}
+
+function deterministicBinary(byteCount) {
+  const bytes = Buffer.alloc(byteCount);
+  let state = 0x6d2b79f5;
+  for (let i = 0; i < bytes.length; i += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    bytes[i] = state & 0xff;
+  }
+  bytes[0] = 0;
+  return bytes;
+}
+
+function directPacketInput({ modelPatch, authoritativePatch = modelPatch } = {}) {
+  const patch = authoritativePatch ?? Buffer.from("diff --git a/x b/x\n", "utf8");
+  const projected = modelPatch ?? patch;
+  return {
+    owner: "acme-org",
+    repository: "widgets",
+    pullNumber: 1,
+    baseRef: "main",
+    baseTipSha: "a".repeat(40),
+    mergeBaseSha: "b".repeat(40),
+    headSha: "c".repeat(40),
+    diff: {
+      changedFiles: [{
+        path: "x",
+        oldMode: "100644",
+        newMode: "100644",
+        oldOid: "1".repeat(40),
+        newOid: "2".repeat(40),
+        status: "M",
+        binary: false,
+        oldBytes: 1,
+        newBytes: 1
+      }],
+      patch,
+      patchBytes: patch.length,
+      patchDigest: crypto.createHash("sha256").update(patch).digest("hex"),
+      modelPatch: projected,
+      modelPatchBytes: projected.length,
+      modelPatchDigest: crypto.createHash("sha256").update(projected).digest("hex"),
+      pathsDigest: "d".repeat(64)
+    },
+    instructions: {
+      files: [],
+      applicability: [],
+      receipt: {
+        files: [],
+        applicability: [],
+        totalBytes: 0,
+        fileCount: 0
+      }
+    }
+  };
 }
 
 async function listenHttpServer(handler) {
@@ -861,6 +923,8 @@ test("unusual paths, binary, and gitlink changes collect correctly", async () =>
     assert.ok(paths.includes("vendor/lib"));
     const gitlink = diff.changedFiles.find((f) => f.path === "vendor/lib");
     assert.equal(gitlink.newMode, "160000");
+    assert.equal(gitlink.oldBytes, null);
+    assert.equal(gitlink.newBytes, null);
     assert.ok(diff.patch.length > 0);
     // Binary evidence present in full-index patch
     assert.ok(
@@ -870,6 +934,362 @@ test("unusual paths, binary, and gitlink changes collect correctly", async () =>
     );
   } finally {
     await repo.dispose();
+  }
+});
+
+test("binary bodies stay out of the model packet while authoritative receipt evidence remains exact", async () => {
+  const binary = deterministicBinary(1024 * 1024 - 4096);
+  const source = buildSourceRepo(({ git, write, commit }) => {
+    git(["checkout", "-b", "feature"]);
+    write("assets/random.bin", binary);
+    write("src/app.js", "console.log('bounded model patch')\n");
+    git(["add", "assets/random.bin", "src/app.js"]);
+    commit("binary and text");
+    git(["update-ref", "refs/pull/1/head", git(["rev-parse", "HEAD"])]);
+  });
+
+  const authoritativePatch = runGitBuffer(source.root, [
+    "diff",
+    "--binary",
+    "--full-index",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-renames",
+    "--no-color",
+    `${source.baseTipSha}..${source.headSha}`
+  ]);
+  const authoritativeDigest = crypto
+    .createHash("sha256")
+    .update(authoritativePatch)
+    .digest("hex");
+  assert.match(authoritativePatch.toString("utf8"), /GIT binary patch/);
+
+  try {
+    const packet = await collectTestReviewPacket({
+      owner: "acme-org",
+      repository: "widgets",
+      pullNumber: source.pullNumber,
+      baseRef: source.baseRef,
+      baseTipSha: source.baseTipSha,
+      headSha: source.headSha,
+      testLocalRemoteUrl: source.root,
+      gitExecutable: GIT
+    });
+
+    assert.equal(packet.patch.encoding, "utf8");
+    assert.doesNotMatch(packet.patch.content, /GIT binary patch/);
+    assert.match(packet.patch.content, /Binary files .*random\.bin.* differ/);
+    assert.match(packet.patch.content, /bounded model patch/);
+    assert.ok(packet.patch.bytes < 64 * 1024);
+    assert.equal(packet.receipt.patchBytes, authoritativePatch.length);
+    assert.equal(packet.receipt.patchDigest, authoritativeDigest);
+    assert.equal(packet.digests.patchDigest, authoritativeDigest);
+    assert.equal(packet.digests.modelPatchDigest, packet.patch.digest);
+    assert.equal(JSON.stringify(packet).includes(authoritativePatch.toString("base64")), false);
+    assert.equal(JSON.stringify(packet.receipt).includes("GIT binary patch"), false);
+
+    const binaryFile = packet.changedFiles.find((file) => file.path === "assets/random.bin");
+    assert.deepEqual(
+      {
+        binary: binaryFile.binary,
+        oldBytes: binaryFile.oldBytes,
+        newBytes: binaryFile.newBytes
+      },
+      { binary: true, oldBytes: null, newBytes: binary.length }
+    );
+    const textFile = packet.changedFiles.find((file) => file.path === "src/app.js");
+    assert.equal(textFile.binary, false);
+    assert.equal(textFile.oldBytes, Buffer.byteLength("console.log(1)\n"));
+    assert.equal(textFile.newBytes, Buffer.byteLength("console.log('bounded model patch')\n"));
+  } finally {
+    fs.rmSync(source.root, { recursive: true, force: true });
+  }
+});
+
+test("trusted info attributes neutralize nested head-controlled binary and text classification", async () => {
+  const source = buildSourceRepo(({ git, write, commit }) => {
+    git(["checkout", "-b", "feature"]);
+    write("nested/.gitattributes", "*.bin diff\n*.js -diff\n");
+    write("nested/random.bin", deterministicBinary(128 * 1024));
+    write("nested/app.js", "export const safe = true;\n");
+    git(["add", "nested/.gitattributes", "nested/random.bin", "nested/app.js"]);
+    commit("hostile attributes");
+    git(["update-ref", "refs/pull/1/head", git(["rev-parse", "HEAD"])]);
+  });
+
+  try {
+    const packet = await collectTestReviewPacket({
+      owner: "acme-org",
+      repository: "widgets",
+      pullNumber: source.pullNumber,
+      baseRef: source.baseRef,
+      baseTipSha: source.baseTipSha,
+      headSha: source.headSha,
+      testLocalRemoteUrl: source.root,
+      gitExecutable: GIT
+    });
+    assert.equal(packet.patch.encoding, "utf8");
+    assert.doesNotMatch(packet.patch.content, /GIT binary patch/);
+    assert.match(packet.patch.content, /Binary files .*nested\/random\.bin.* differ/);
+    assert.match(packet.patch.content, /export const safe = true/);
+    assert.equal(
+      packet.changedFiles.find((file) => file.path === "nested/random.bin").binary,
+      true
+    );
+    assert.equal(
+      packet.changedFiles.find((file) => file.path === "nested/app.js").binary,
+      false
+    );
+  } finally {
+    fs.rmSync(source.root, { recursive: true, force: true });
+  }
+});
+
+test("text-only projection is byte-identical and preserves RIGHT-side placement", async () => {
+  const source = buildSourceRepo(({ git, write, commit }) => {
+    git(["checkout", "-b", "feature"]);
+    write("src/app.js", "console.log(2)\n");
+    git(["add", "src/app.js"]);
+    commit("text only");
+    git(["update-ref", "refs/pull/1/head", git(["rev-parse", "HEAD"])]);
+  });
+  const repo = await openFromSource(source);
+  try {
+    const diff = await collectExactHeadDiff(repo);
+    assert.equal(diff.modelPatch.equals(diff.patch), true);
+    assert.deepEqual(
+      collectRightSideMap(diff.modelPatch.toString("utf8")),
+      collectRightSideMap(diff.patch.toString("utf8"))
+    );
+  } finally {
+    await repo.dispose();
+    fs.rmSync(source.root, { recursive: true, force: true });
+  }
+});
+
+test("model patch accepts 1 MiB exactly and rejects the next byte without content leakage", () => {
+  const exact = Buffer.alloc(CollectorLimits.MAX_MODEL_PATCH_BYTES, 0x61);
+  assert.doesNotThrow(() => buildReviewPacket(directPacketInput({ modelPatch: exact })));
+
+  const over = Buffer.alloc(CollectorLimits.MAX_MODEL_PATCH_BYTES + 1, 0x62);
+  assert.throws(
+    () => buildReviewPacket(directPacketInput({ modelPatch: over })),
+    (error) => error instanceof CollectorError
+      && error.code === "E_MODEL_INPUT_TOO_LARGE"
+      && JSON.stringify(error.toPublicJSON()) === JSON.stringify({
+        ok: false,
+        code: "E_MODEL_INPUT_TOO_LARGE",
+        details: {
+          kind: "model_patch",
+          byteCount: CollectorLimits.MAX_MODEL_PATCH_BYTES + 1,
+          limit: CollectorLimits.MAX_MODEL_PATCH_BYTES
+        }
+      })
+  );
+});
+
+test("invalid UTF-8 model projection fails closed and is never base64 encoded", () => {
+  assert.throws(
+    () => buildReviewPacket(directPacketInput({ modelPatch: Buffer.from([0xff]) })),
+    (error) => error instanceof CollectorError
+      && error.code === CollectorErrorCode.E_COLLECTOR_DIFF
+      && !JSON.stringify(error.toPublicJSON()).includes("/w==")
+  );
+});
+
+test("owned existing info directory is leased and restored across sequential collections", async () => {
+  const source = buildSourceRepo(({ git, write, commit }) => {
+    git(["checkout", "-b", "feature"]);
+    write("src/app.js", "console.log(3)\n");
+    git(["add", "src/app.js"]);
+    commit("text");
+    git(["update-ref", "refs/pull/1/head", git(["rev-parse", "HEAD"])]);
+  });
+  const repo = await openFromSource(source);
+  const infoPath = path.join(repo.barePath, "info");
+  const attributesPath = path.join(infoPath, "attributes");
+  const sentinelPath = path.join(infoPath, "sentinel");
+  try {
+    fs.mkdirSync(infoPath, { recursive: false, mode: 0o755 });
+    fs.chmodSync(infoPath, 0o755);
+    fs.writeFileSync(sentinelPath, "caller-owned sentinel\n", {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx"
+    });
+    const infoBefore = fs.lstatSync(infoPath);
+    const sentinelBefore = fs.lstatSync(sentinelPath);
+
+    const first = await collectExactHeadDiff(repo);
+    const firstMode = fs.lstatSync(infoPath).mode & 0o777;
+    const attributesAfterFirst = fs.existsSync(attributesPath);
+    const second = await collectExactHeadDiff(repo);
+    const infoAfter = fs.lstatSync(infoPath);
+    const sentinelAfter = fs.lstatSync(sentinelPath);
+
+    assert.equal(first.modelPatch.equals(second.modelPatch), true);
+    assert.deepEqual(
+      {
+        infoInodePreserved:
+          infoAfter.dev === infoBefore.dev && infoAfter.ino === infoBefore.ino,
+        sentinelInodePreserved:
+          sentinelAfter.dev === sentinelBefore.dev
+          && sentinelAfter.ino === sentinelBefore.ino,
+        sentinelBytes: fs.readFileSync(sentinelPath, "utf8"),
+        firstMode,
+        finalMode: infoAfter.mode & 0o777,
+        attributesAfterFirst,
+        attributesAfterSecond: fs.existsSync(attributesPath)
+      },
+      {
+        infoInodePreserved: true,
+        sentinelInodePreserved: true,
+        sentinelBytes: "caller-owned sentinel\n",
+        firstMode: 0o755,
+        finalMode: 0o755,
+        attributesAfterFirst: false,
+        attributesAfterSecond: false
+      }
+    );
+  } finally {
+    await repo.dispose();
+    fs.rmSync(source.root, { recursive: true, force: true });
+  }
+});
+
+test("symlinked info directory fails closed without changing its external target", async () => {
+  const source = buildSourceRepo(({ git, write, commit }) => {
+    git(["checkout", "-b", "feature"]);
+    write("src/app.js", "console.log(4)\n");
+    git(["add", "src/app.js"]);
+    commit("text");
+    git(["update-ref", "refs/pull/1/head", git(["rev-parse", "HEAD"])]);
+  });
+  const repo = await openFromSource(source);
+  const external = tempDir("grok-attributes-external-");
+  const sentinelPath = path.join(external, "sentinel");
+  const infoPath = path.join(repo.barePath, "info");
+  try {
+    fs.chmodSync(external, 0o755);
+    fs.writeFileSync(sentinelPath, "external sentinel\n", {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx"
+    });
+    const externalBefore = fs.lstatSync(external);
+    const sentinelBefore = fs.lstatSync(sentinelPath);
+    fs.symlinkSync(external, infoPath, "dir");
+
+    await assert.rejects(
+      () => collectExactHeadDiff(repo),
+      (error) => error instanceof CollectorError
+        && error.code === CollectorErrorCode.E_COLLECTOR_STATE
+    );
+
+    const externalAfter = fs.lstatSync(external);
+    const sentinelAfter = fs.lstatSync(sentinelPath);
+    assert.equal(fs.lstatSync(infoPath).isSymbolicLink(), true);
+    assert.equal(externalAfter.mode & 0o777, externalBefore.mode & 0o777);
+    assert.equal(
+      externalAfter.dev === externalBefore.dev && externalAfter.ino === externalBefore.ino,
+      true
+    );
+    assert.equal(
+      sentinelAfter.dev === sentinelBefore.dev && sentinelAfter.ino === sentinelBefore.ino,
+      true
+    );
+    assert.equal(fs.readFileSync(sentinelPath, "utf8"), "external sentinel\n");
+    assert.equal(fs.existsSync(path.join(external, "attributes")), false);
+  } finally {
+    await repo.dispose();
+    fs.rmSync(external, { recursive: true, force: true });
+    fs.rmSync(source.root, { recursive: true, force: true });
+  }
+});
+
+test("model projection failure removes temporary attributes so retry preserves the original result", async () => {
+  const source = buildSourceRepo(({ git, write, commit }) => {
+    git(["checkout", "-b", "feature"]);
+    write(
+      "oversized.txt",
+      `${"x".repeat(CollectorLimits.MAX_MODEL_PATCH_BYTES + 4096)}\n`
+    );
+    git(["add", "oversized.txt"]);
+    commit("oversized text");
+    git(["update-ref", "refs/pull/1/head", git(["rev-parse", "HEAD"])]);
+  });
+  const repo = await openFromSource(source);
+  const attributesPath = path.join(repo.barePath, "info", "attributes");
+  const collectFailure = async () => {
+    try {
+      await collectExactHeadDiff(repo);
+      return null;
+    } catch (error) {
+      return error;
+    }
+  };
+  try {
+    const first = await collectFailure();
+    const attributesAfterFirst = fs.existsSync(attributesPath);
+    const second = await collectFailure();
+    const attributesAfterSecond = fs.existsSync(attributesPath);
+
+    assert.deepEqual(
+      {
+        firstCode: first?.code ?? null,
+        attributesAfterFirst,
+        secondCode: second?.code ?? null,
+        attributesAfterSecond
+      },
+      {
+        firstCode: CollectorErrorCode.E_MODEL_INPUT_TOO_LARGE,
+        attributesAfterFirst: false,
+        secondCode: CollectorErrorCode.E_MODEL_INPUT_TOO_LARGE,
+        attributesAfterSecond: false
+      }
+    );
+  } finally {
+    await repo.dispose();
+    fs.rmSync(source.root, { recursive: true, force: true });
+  }
+});
+
+test("preexisting info attributes override fails closed", async () => {
+  const source = buildSourceRepo(({ git, write, commit }) => {
+    git(["checkout", "-b", "feature"]);
+    write("src/app.js", "console.log(3)\n");
+    git(["add", "src/app.js"]);
+    commit("text");
+    git(["update-ref", "refs/pull/1/head", git(["rev-parse", "HEAD"])]);
+  });
+  const repo = await openFromSource(source);
+  try {
+    const infoPath = path.join(repo.barePath, "info");
+    const attributesPath = path.join(infoPath, "attributes");
+    fs.mkdirSync(infoPath, { recursive: false, mode: 0o755 });
+    fs.chmodSync(infoPath, 0o755);
+    fs.writeFileSync(attributesPath, "* diff\n", {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx"
+    });
+    const attributesBefore = fs.lstatSync(attributesPath);
+    await assert.rejects(
+      () => collectExactHeadDiff(repo),
+      (error) => error instanceof CollectorError
+        && error.code === CollectorErrorCode.E_COLLECTOR_STATE
+    );
+    const attributesAfter = fs.lstatSync(attributesPath);
+    assert.equal(fs.lstatSync(infoPath).mode & 0o777, 0o755);
+    assert.equal(
+      attributesAfter.dev === attributesBefore.dev
+        && attributesAfter.ino === attributesBefore.ino,
+      true
+    );
+    assert.equal(fs.readFileSync(attributesPath, "utf8"), "* diff\n");
+  } finally {
+    await repo.dispose();
+    fs.rmSync(source.root, { recursive: true, force: true });
   }
 });
 
@@ -1179,7 +1599,7 @@ test("sealing removes remotes/auth and packet never exposes bare path", async ()
     gitExecutable: GIT
   });
 
-  assert.equal(packet.schemaVersion, 1);
+  assert.equal(packet.schemaVersion, 2);
   assert.equal(packet.security.bareRepositoryPath, null);
   assert.equal(packet.security.evidenceIsUntrusted, true);
   assert.equal(packet.security.aggregateFetchTransportBounded, false);
@@ -1284,11 +1704,17 @@ test("buildReviewPacket rejects path leakage fields and requires digests", () =>
         newMode: "100644",
         oldOid: "1".repeat(40),
         newOid: "2".repeat(40),
-        status: "M"
+        status: "M",
+        binary: false,
+        oldBytes: 1,
+        newBytes: 1
       }],
       patch,
       patchBytes: patch.length,
       patchDigest: digest,
+      modelPatch: patch,
+      modelPatchBytes: patch.length,
+      modelPatchDigest: digest,
       pathsDigest: "d".repeat(64)
     },
     instructions: {
@@ -1331,11 +1757,17 @@ test("review receipt is reconstructed from allowlisted collected metadata", () =
         newMode: "100644",
         oldOid: "1".repeat(40),
         newOid: "2".repeat(40),
-        status: "M"
+        status: "M",
+        binary: false,
+        oldBytes: 1,
+        newBytes: 1
       }],
       patch,
       patchBytes: patch.length,
       patchDigest,
+      modelPatch: patch,
+      modelPatchBytes: patch.length,
+      modelPatchDigest: patchDigest,
       pathsDigest: "d".repeat(64)
     },
     instructions: {

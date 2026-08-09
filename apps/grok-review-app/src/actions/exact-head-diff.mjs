@@ -13,6 +13,8 @@
  */
 
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 import {
   CollectorError,
@@ -30,6 +32,433 @@ const OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const STATUS_RE = /^[AMDTadmt]$/;
 const ZERO_OID_RE = /^0+$/;
 export const MAX_PATCH_SOURCE_BLOB_BYTES = CollectorLimits.MAX_PATCH_BYTES * 8;
+const TRUSTED_ATTRIBUTES_BYTES = Buffer.from(
+  [
+    "* !diff !text !working-tree-encoding !filter",
+    "**/* !diff !text !working-tree-encoding !filter",
+    ""
+  ].join("\n"),
+  "utf8"
+);
+
+function sameInode(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function inspectOwnerDirectory(directory, expectedParent = null) {
+  const stat = fs.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    failCollector(
+      CollectorErrorCode.E_COLLECTOR_STATE,
+      "Trusted attributes parent is not a regular directory."
+    );
+  }
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    failCollector(
+      CollectorErrorCode.E_COLLECTOR_STATE,
+      "Trusted attributes parent owner is invalid."
+    );
+  }
+  const resolved = fs.realpathSync(directory);
+  if (expectedParent && path.dirname(resolved) !== expectedParent) {
+    failCollector(
+      CollectorErrorCode.E_COLLECTOR_STATE,
+      "Trusted attributes parent escaped its repository."
+    );
+  }
+  return { stat, resolved };
+}
+
+function assertOwnerPrivateDirectory(directory, expectedParent = null) {
+  const inspected = inspectOwnerDirectory(directory, expectedParent);
+  if (process.platform !== "win32" && (inspected.stat.mode & 0o077) !== 0) {
+    failCollector(
+      CollectorErrorCode.E_COLLECTOR_STATE,
+      "Trusted attributes parent permissions are invalid."
+    );
+  }
+  return inspected;
+}
+
+function trustedInfoOpenFlags() {
+  let flags = fs.constants.O_RDONLY;
+  if (process.platform === "win32") return flags;
+  if (
+    typeof fs.constants.O_DIRECTORY !== "number"
+    || typeof fs.constants.O_NOFOLLOW !== "number"
+  ) {
+    failCollector(
+      CollectorErrorCode.E_COLLECTOR_STATE,
+      "Trusted directory descriptor flags are unavailable."
+    );
+  }
+  flags |= fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
+  return flags;
+}
+
+function trustedNoFollowFlag() {
+  if (process.platform === "win32") return 0;
+  if (typeof fs.constants.O_NOFOLLOW !== "number") {
+    failCollector(
+      CollectorErrorCode.E_COLLECTOR_STATE,
+      "Trusted file descriptor flags are unavailable."
+    );
+  }
+  return fs.constants.O_NOFOLLOW;
+}
+
+function isExpectedTrustedAttributesStat(stat, expected) {
+  return sameInode(stat, expected)
+    && stat.isFile()
+    && (typeof process.getuid !== "function" || stat.uid === process.getuid())
+    && (process.platform === "win32" || (stat.mode & 0o777) === 0o600)
+    && stat.size === TRUSTED_ATTRIBUTES_BYTES.length;
+}
+
+function openTrustedInfoLease(infoPath, bareResolved, preexisting) {
+  const before = inspectOwnerDirectory(infoPath, bareResolved);
+  const originalMode = before.stat.mode & 0o7777;
+  let descriptor = null;
+  try {
+    descriptor = fs.openSync(infoPath, trustedInfoOpenFlags());
+    const opened = fs.fstatSync(descriptor);
+    if (
+      !sameInode(before.stat, opened)
+      || !opened.isDirectory()
+      || (typeof process.getuid === "function" && opened.uid !== process.getuid())
+    ) {
+      failCollector(
+        CollectorErrorCode.E_COLLECTOR_STATE,
+        "Trusted attributes directory descriptor is invalid."
+      );
+    }
+
+    if (process.platform !== "win32") fs.fchmodSync(descriptor, 0o700);
+    const tightened = fs.fstatSync(descriptor);
+    const pathAfter = inspectOwnerDirectory(infoPath, bareResolved);
+    if (
+      !sameInode(opened, tightened)
+      || !sameInode(tightened, pathAfter.stat)
+      || pathAfter.resolved !== before.resolved
+      || (process.platform !== "win32" && (tightened.mode & 0o7777) !== 0o700)
+      || (process.platform !== "win32" && (pathAfter.stat.mode & 0o7777) !== 0o700)
+    ) {
+      failCollector(
+        CollectorErrorCode.E_COLLECTOR_STATE,
+        "Trusted attributes directory identity changed during lease."
+      );
+    }
+
+    return Object.freeze({
+      descriptor,
+      infoPath,
+      bareResolved,
+      resolved: before.resolved,
+      stat: tightened,
+      originalMode,
+      preexisting
+    });
+  } catch (error) {
+    let releaseFailed = false;
+    if (descriptor !== null) {
+      if (preexisting && process.platform !== "win32") {
+        try {
+          fs.fchmodSync(descriptor, originalMode);
+        } catch {
+          releaseFailed = true;
+        }
+      }
+      try {
+        fs.closeSync(descriptor);
+      } catch {
+        releaseFailed = true;
+      }
+    }
+    if (error instanceof CollectorError && !releaseFailed) throw error;
+    failCollector(
+      CollectorErrorCode.E_COLLECTOR_STATE,
+      "Trusted attributes directory lease failed closed."
+    );
+  }
+}
+
+function restoreTrustedInfoLease(lease) {
+  const before = fs.fstatSync(lease.descriptor);
+  if (
+    !sameInode(before, lease.stat)
+    || !before.isDirectory()
+    || (typeof process.getuid === "function" && before.uid !== process.getuid())
+    || (process.platform !== "win32" && (before.mode & 0o7777) !== 0o700)
+  ) {
+    failCollector(
+      CollectorErrorCode.E_COLLECTOR_STATE,
+      "Trusted attributes directory lease changed before cleanup."
+    );
+  }
+
+  const restoredMode = lease.preexisting ? lease.originalMode : 0o700;
+  if (lease.preexisting && process.platform !== "win32") {
+    fs.fchmodSync(lease.descriptor, restoredMode);
+  }
+  const after = fs.fstatSync(lease.descriptor);
+  const pathAfter = inspectOwnerDirectory(lease.infoPath, lease.bareResolved);
+  if (
+    !sameInode(before, after)
+    || !sameInode(after, pathAfter.stat)
+    || pathAfter.resolved !== lease.resolved
+    || (process.platform !== "win32" && (after.mode & 0o7777) !== restoredMode)
+    || (process.platform !== "win32" && (pathAfter.stat.mode & 0o7777) !== restoredMode)
+  ) {
+    failCollector(
+      CollectorErrorCode.E_COLLECTOR_STATE,
+      "Trusted attributes directory mode restoration failed closed."
+    );
+  }
+}
+
+/**
+ * Install the sole high-precedence attributes projection used for model
+ * material. The authoritative --binary patch is collected before this file
+ * exists. Exclusive creation plus parent/file identity checks make a
+ * preexisting or replaced override fail closed.
+ */
+function createTrustedModelAttributes(repo) {
+  let descriptor = null;
+  let readDescriptor = null;
+  let infoLease = null;
+  try {
+    const workspace = assertOwnerPrivateDirectory(repo.workspaceRoot);
+    const bare = assertOwnerPrivateDirectory(repo.barePath, workspace.resolved);
+    const infoPath = path.join(bare.resolved, "info");
+    let infoPreexisting = true;
+    try {
+      fs.mkdirSync(infoPath, { recursive: false, mode: 0o700 });
+      infoPreexisting = false;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    infoLease = openTrustedInfoLease(infoPath, bare.resolved, infoPreexisting);
+    const attributesPath = path.join(infoLease.resolved, "attributes");
+
+    try {
+      fs.lstatSync(attributesPath);
+      failCollector(
+        CollectorErrorCode.E_COLLECTOR_STATE,
+        "Trusted attributes override already exists."
+      );
+    } catch (error) {
+      if (error instanceof CollectorError) throw error;
+      if (error?.code !== "ENOENT") throw error;
+    }
+
+    const noFollow = trustedNoFollowFlag();
+    descriptor = fs.openSync(
+      attributesPath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollow,
+      0o600
+    );
+    fs.fchmodSync(descriptor, 0o600);
+    fs.writeFileSync(descriptor, TRUSTED_ATTRIBUTES_BYTES);
+    fs.fsyncSync(descriptor);
+    const written = fs.fstatSync(descriptor);
+    if (
+      !written.isFile()
+      || (process.platform !== "win32" && (written.mode & 0o777) !== 0o600)
+      || (typeof process.getuid === "function" && written.uid !== process.getuid())
+      || written.size !== TRUSTED_ATTRIBUTES_BYTES.length
+    ) {
+      failCollector(
+        CollectorErrorCode.E_COLLECTOR_STATE,
+        "Trusted attributes file metadata is invalid."
+      );
+    }
+    fs.closeSync(descriptor);
+    descriptor = null;
+
+    const infoAfter = inspectOwnerDirectory(infoPath, bare.resolved);
+    const fileAfter = fs.lstatSync(attributesPath);
+    if (
+      !sameInode(infoLease.stat, infoAfter.stat)
+      || infoAfter.resolved !== infoLease.resolved
+      || (process.platform !== "win32" && (infoAfter.stat.mode & 0o7777) !== 0o700)
+      || !isExpectedTrustedAttributesStat(fileAfter, written)
+      || fileAfter.isSymbolicLink()
+      || fs.realpathSync(attributesPath) !== attributesPath
+    ) {
+      failCollector(
+        CollectorErrorCode.E_COLLECTOR_STATE,
+        "Trusted attributes identity changed during creation."
+      );
+    }
+
+    readDescriptor = fs.openSync(attributesPath, fs.constants.O_RDONLY | noFollow);
+    const readBefore = fs.fstatSync(readDescriptor);
+    const bytes = fs.readFileSync(readDescriptor);
+    const readAfter = fs.fstatSync(readDescriptor);
+    const infoFinal = inspectOwnerDirectory(infoPath, bare.resolved);
+    const fileFinal = fs.lstatSync(attributesPath);
+    if (
+      !isExpectedTrustedAttributesStat(readBefore, written)
+      || !sameInode(readBefore, readAfter)
+      || !bytes.equals(TRUSTED_ATTRIBUTES_BYTES)
+      || !sameInode(infoLease.stat, infoFinal.stat)
+      || infoFinal.resolved !== infoLease.resolved
+      || (process.platform !== "win32" && (infoFinal.stat.mode & 0o7777) !== 0o700)
+      || !isExpectedTrustedAttributesStat(fileFinal, written)
+      || fileFinal.isSymbolicLink()
+      || fs.realpathSync(attributesPath) !== attributesPath
+    ) {
+      failCollector(
+        CollectorErrorCode.E_COLLECTOR_STATE,
+        "Trusted attributes bytes changed during verification."
+      );
+    }
+
+    const handle = Object.freeze({
+      attributesPath,
+      attributesDescriptor: readDescriptor,
+      attributesStat: written,
+      infoLease
+    });
+    readDescriptor = null;
+    infoLease = null;
+    return handle;
+  } catch (error) {
+    let releaseFailed = false;
+    if (descriptor !== null) {
+      try {
+        fs.closeSync(descriptor);
+      } catch {
+        releaseFailed = true;
+      }
+    }
+    if (readDescriptor !== null) {
+      try {
+        fs.closeSync(readDescriptor);
+      } catch {
+        releaseFailed = true;
+      }
+    }
+    if (infoLease !== null) {
+      try {
+        restoreTrustedInfoLease(infoLease);
+      } catch {
+        releaseFailed = true;
+      }
+      try {
+        fs.closeSync(infoLease.descriptor);
+      } catch {
+        releaseFailed = true;
+      }
+    }
+    if (error instanceof CollectorError && !releaseFailed) throw error;
+    failCollector(
+      CollectorErrorCode.E_COLLECTOR_STATE,
+      "Trusted attributes override creation failed closed."
+    );
+  }
+}
+
+function removeTrustedModelAttributes(handle) {
+  let pathDescriptor = null;
+  let cleanupError = null;
+  try {
+    const infoPath = inspectOwnerDirectory(
+      handle.infoLease.infoPath,
+      handle.infoLease.bareResolved
+    );
+    const infoDescriptor = fs.fstatSync(handle.infoLease.descriptor);
+    const attributesDescriptor = fs.fstatSync(handle.attributesDescriptor);
+    const attributesPath = fs.lstatSync(handle.attributesPath);
+    if (
+      !sameInode(infoPath.stat, handle.infoLease.stat)
+      || infoPath.resolved !== handle.infoLease.resolved
+      || (process.platform !== "win32" && (infoPath.stat.mode & 0o7777) !== 0o700)
+      || !sameInode(infoDescriptor, handle.infoLease.stat)
+      || !infoDescriptor.isDirectory()
+      || (typeof process.getuid === "function" && infoDescriptor.uid !== process.getuid())
+      || (process.platform !== "win32" && (infoDescriptor.mode & 0o7777) !== 0o700)
+      || !isExpectedTrustedAttributesStat(attributesDescriptor, handle.attributesStat)
+      || !isExpectedTrustedAttributesStat(attributesPath, handle.attributesStat)
+      || attributesPath.isSymbolicLink()
+      || fs.realpathSync(handle.attributesPath) !== handle.attributesPath
+    ) {
+      failCollector(
+        CollectorErrorCode.E_COLLECTOR_STATE,
+        "Trusted attributes override changed before cleanup."
+      );
+    }
+
+    pathDescriptor = fs.openSync(
+      handle.attributesPath,
+      fs.constants.O_RDONLY | trustedNoFollowFlag()
+    );
+    const openedBefore = fs.fstatSync(pathDescriptor);
+    const bytes = fs.readFileSync(pathDescriptor);
+    const openedAfter = fs.fstatSync(pathDescriptor);
+    const fileFinal = fs.lstatSync(handle.attributesPath);
+    const infoFinal = inspectOwnerDirectory(
+      handle.infoLease.infoPath,
+      handle.infoLease.bareResolved
+    );
+    if (
+      !isExpectedTrustedAttributesStat(openedBefore, handle.attributesStat)
+      || !sameInode(openedBefore, openedAfter)
+      || !bytes.equals(TRUSTED_ATTRIBUTES_BYTES)
+      || !isExpectedTrustedAttributesStat(fileFinal, handle.attributesStat)
+      || fileFinal.isSymbolicLink()
+      || !sameInode(infoFinal.stat, handle.infoLease.stat)
+      || infoFinal.resolved !== handle.infoLease.resolved
+      || (process.platform !== "win32" && (infoFinal.stat.mode & 0o7777) !== 0o700)
+      || fs.realpathSync(handle.attributesPath) !== handle.attributesPath
+    ) {
+      failCollector(
+        CollectorErrorCode.E_COLLECTOR_STATE,
+        "Trusted attributes override failed cleanup verification."
+      );
+    }
+
+    fs.unlinkSync(handle.attributesPath);
+    try {
+      fs.lstatSync(handle.attributesPath);
+      failCollector(
+        CollectorErrorCode.E_COLLECTOR_STATE,
+        "Trusted attributes override remained after cleanup."
+      );
+    } catch (error) {
+      if (error instanceof CollectorError) throw error;
+      if (error?.code !== "ENOENT") throw error;
+    }
+  } catch (error) {
+    cleanupError = error;
+  }
+
+  try {
+    restoreTrustedInfoLease(handle.infoLease);
+  } catch (error) {
+    if (!cleanupError) cleanupError = error;
+  }
+  for (const openDescriptor of [
+    pathDescriptor,
+    handle.attributesDescriptor,
+    handle.infoLease.descriptor
+  ]) {
+    if (openDescriptor === null) continue;
+    try {
+      fs.closeSync(openDescriptor);
+    } catch (error) {
+      if (!cleanupError) cleanupError = error;
+    }
+  }
+
+  if (cleanupError instanceof CollectorError) throw cleanupError;
+  if (cleanupError) {
+    failCollector(
+      CollectorErrorCode.E_COLLECTOR_STATE,
+      "Trusted attributes override cleanup failed closed."
+    );
+  }
+}
 
 /**
  * Fatal UTF-8 decode (no replacement characters).
@@ -245,7 +674,7 @@ async function assertPatchSourceBlobsBounded(repo, changedFiles) {
     addBlob(file.oldMode, file.oldOid);
     addBlob(file.newMode, file.newOid);
   }
-  if (oids.size === 0) return;
+  if (oids.size === 0) return new Map();
 
   const ordered = [...oids];
   const batchInput = Buffer.from(`${ordered.join("\n")}\n`, "ascii");
@@ -263,6 +692,7 @@ async function assertPatchSourceBlobsBounded(repo, changedFiles) {
   }
 
   let aggregateBytes = 0;
+  const sizes = new Map();
   for (let i = 0; i < ordered.length; i += 1) {
     const expectedOid = ordered[i];
     const line = lines[i];
@@ -294,7 +724,41 @@ async function assertPatchSourceBlobsBounded(repo, changedFiles) {
         limit: MAX_PATCH_SOURCE_BLOB_BYTES
       });
     }
+    sizes.set(expectedOid, size);
   }
+  return sizes;
+}
+
+function parseNumstatBinaryMap(raw, changedFiles) {
+  const records = splitNulTokens(raw, "numstat");
+  const expectedPaths = new Set(changedFiles.map((file) => file.path));
+  const binaryByPath = new Map();
+  for (const record of records) {
+    const firstTab = record.indexOf(0x09);
+    const secondTab = firstTab < 0 ? -1 : record.indexOf(0x09, firstTab + 1);
+    if (firstTab < 1 || secondTab < firstTab + 2 || secondTab === record.length - 1) {
+      failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "numstat record is malformed.");
+    }
+    const added = record.subarray(0, firstTab).toString("ascii");
+    const deleted = record.subarray(firstTab + 1, secondTab).toString("ascii");
+    if (!(/^[0-9]+$/.test(added) && /^[0-9]+$/.test(deleted)) && !(added === "-" && deleted === "-")) {
+      failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "numstat counters are malformed.");
+    }
+    const pathBytes = record.subarray(secondTab + 1);
+    const repoPath = decodeUtf8Fatal(pathBytes);
+    assertSafeRepoPath(repoPath, pathBytes.length);
+    if (!expectedPaths.has(repoPath) || binaryByPath.has(repoPath)) {
+      failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "numstat paths do not match changed-file evidence.");
+    }
+    binaryByPath.set(repoPath, added === "-");
+  }
+  if (
+    binaryByPath.size !== expectedPaths.size
+    || [...expectedPaths].some((repoPath) => !binaryByPath.has(repoPath))
+  ) {
+    failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "numstat record count does not match changed-file evidence.");
+  }
+  return binaryByPath;
 }
 
 /**
@@ -310,6 +774,9 @@ async function assertPatchSourceBlobsBounded(repo, changedFiles) {
  *   patch: Buffer,
  *   patchBytes: number,
  *   patchDigest: string,
+ *   modelPatch: Buffer,
+ *   modelPatchBytes: number,
+ *   modelPatchDigest: string,
  *   pathsDigest: string
  * }>}
  */
@@ -395,7 +862,7 @@ export async function collectExactHeadDiff(repo, identity = {}) {
     });
   }
 
-  await assertPatchSourceBlobsBounded(repo, changedFiles);
+  const blobSizes = await assertPatchSourceBlobsBounded(repo, changedFiles);
 
   // Stream patch with incremental hashing. Fail without returning partial evidence.
   let patchResult;
@@ -434,6 +901,105 @@ export async function collectExactHeadDiff(repo, identity = {}) {
   }
 
   const patchDigest = crypto.createHash("sha256").update(patch).digest("hex");
+
+  // The model projection is rendered only after installing a repository-local,
+  // owner-only attributes override. This file has the highest Git attribute
+  // precedence and resets head-controlled diff/text/encoding/filter behavior.
+  const attributesHandle = createTrustedModelAttributes(repo);
+  let binaryByPath;
+  let modelPatch;
+  let modelPatchDigest;
+  let projectionError = null;
+  let cleanupError = null;
+  try {
+    let numstatResult;
+    try {
+      numstatResult = await repo.git([
+        "diff",
+        "--numstat",
+        "-z",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        `${mergeBaseSha}..${headSha}`
+      ], {
+        maxStdout: CollectorLimits.MAX_CHANGED_FILES * (CollectorLimits.MAX_PATH_BYTES + 64),
+        allowFailure: false
+      });
+    } catch (error) {
+      if (error instanceof CollectorError) throw error;
+      failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Binary classification failed closed.");
+    }
+    binaryByPath = parseNumstatBinaryMap(numstatResult.stdout, changedFiles);
+
+    let modelPatchResult;
+    try {
+      modelPatchResult = await repo.git([
+        "diff",
+        "--full-index",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--no-color",
+        `${mergeBaseSha}..${headSha}`
+      ], {
+        maxStdout: CollectorLimits.MAX_MODEL_PATCH_BYTES + 1,
+        allowFailure: false
+      });
+    } catch (error) {
+      if (error instanceof CollectorError && error.code === CollectorErrorCode.E_COLLECTOR_OVERFLOW) {
+        failCollector(
+          CollectorErrorCode.E_MODEL_INPUT_TOO_LARGE,
+          "Model patch exceeds the hard byte limit.",
+          {
+            kind: "model_patch",
+            byteCount: CollectorLimits.MAX_MODEL_PATCH_BYTES + 1,
+            limit: CollectorLimits.MAX_MODEL_PATCH_BYTES
+          }
+        );
+      }
+      if (error instanceof CollectorError) throw error;
+      failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Model patch collection failed closed.");
+    }
+
+    modelPatch = modelPatchResult.stdout;
+    if (modelPatch.length > CollectorLimits.MAX_MODEL_PATCH_BYTES) {
+      failCollector(
+        CollectorErrorCode.E_MODEL_INPUT_TOO_LARGE,
+        "Model patch exceeds the hard byte limit.",
+        {
+          kind: "model_patch",
+          byteCount: modelPatch.length,
+          limit: CollectorLimits.MAX_MODEL_PATCH_BYTES
+        }
+      );
+    }
+    const modelPatchText = modelPatch.toString("utf8");
+    if (!Buffer.from(modelPatchText, "utf8").equals(modelPatch)) {
+      failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Model patch is not valid UTF-8.");
+    }
+    if (/(?:^|\n)GIT binary patch(?:\n|$)/.test(modelPatchText)) {
+      failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Model patch contains a binary patch body.");
+    }
+    modelPatchDigest = crypto
+      .createHash("sha256")
+      .update(modelPatch)
+      .digest("hex");
+  } catch (error) {
+    projectionError = error;
+  } finally {
+    try {
+      removeTrustedModelAttributes(attributesHandle);
+    } catch (error) {
+      cleanupError = error;
+    }
+  }
+  // The projection failure is already fail-closed. Preserve its stable reason
+  // if cleanup also fails; a successful projection never survives a cleanup
+  // failure.
+  if (projectionError) throw projectionError;
+  if (cleanupError) throw cleanupError;
+
   const pathsPayload = changedFiles.map((f) => f.path);
   const pathsDigest = crypto
     .createHash("sha256")
@@ -441,7 +1007,17 @@ export async function collectExactHeadDiff(repo, identity = {}) {
     .digest("hex");
 
   // Freeze records (no mutation after return).
-  const frozenFiles = Object.freeze(changedFiles.map((f) => Object.freeze({ ...f })));
+  const bytesFor = (mode, oid) => (
+    mode === "000000" || mode === "160000" || ZERO_OID_RE.test(oid)
+      ? null
+      : blobSizes.get(oid)
+  );
+  const frozenFiles = Object.freeze(changedFiles.map((file) => Object.freeze({
+    ...file,
+    binary: binaryByPath.get(file.path),
+    oldBytes: bytesFor(file.oldMode, file.oldOid),
+    newBytes: bytesFor(file.newMode, file.newOid)
+  })));
 
   return Object.freeze({
     baseTipSha,
@@ -451,6 +1027,9 @@ export async function collectExactHeadDiff(repo, identity = {}) {
     patch,
     patchBytes: patch.length,
     patchDigest,
+    modelPatch,
+    modelPatchBytes: modelPatch.length,
+    modelPatchDigest,
     pathsDigest
   });
 }

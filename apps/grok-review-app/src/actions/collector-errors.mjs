@@ -21,13 +21,16 @@ export const CollectorErrorCode = Object.freeze({
   E_COLLECTOR_DISPOSAL: "E_COLLECTOR_DISPOSAL",
   E_COLLECTOR_CONFIG: "E_COLLECTOR_CONFIG",
   E_COLLECTOR_OVERFLOW: "E_COLLECTOR_OVERFLOW",
-  E_COLLECTOR_STATE: "E_COLLECTOR_STATE"
+  E_COLLECTOR_STATE: "E_COLLECTOR_STATE",
+  E_MODEL_INPUT_TOO_LARGE: "E_MODEL_INPUT_TOO_LARGE"
 });
 
 /** Hard limits for hostile-repository-safe collection. */
 export const CollectorLimits = Object.freeze({
   MAX_CHANGED_FILES: 3000,
   MAX_PATCH_BYTES: 8 * 1024 * 1024,
+  MAX_MODEL_PATCH_BYTES: 1 * 1024 * 1024,
+  MAX_MODEL_PACKET_JSON_BYTES: 2 * 1024 * 1024,
   MAX_INSTRUCTION_FILES: 32,
   MAX_INSTRUCTION_FILE_BYTES: 32 * 1024,
   MAX_INSTRUCTION_TOTAL_BYTES: 128 * 1024,
@@ -42,9 +45,9 @@ export const CollectorLimits = Object.freeze({
 
 /** Canonical packet / prompt schema identity (deterministic). */
 export const ReviewPacketVersions = Object.freeze({
-  PACKET_SCHEMA_VERSION: 1,
+  PACKET_SCHEMA_VERSION: 2,
   PROMPT_VERSION: "grok-review-app-prompt-v1",
-  COLLECTOR_VERSION: "exact-head-v1"
+  COLLECTOR_VERSION: "exact-head-v2"
 });
 
 const SAFE_RECEIPT_DETAIL_KEYS = Object.freeze([
