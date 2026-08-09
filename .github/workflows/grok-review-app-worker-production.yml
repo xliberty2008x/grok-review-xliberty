@@ -1,4 +1,4 @@
-name: Grok Review App worker
+name: Grok Review App worker (production)
 
 on:
   workflow_dispatch:
@@ -45,6 +45,7 @@ concurrency:
 jobs:
   review:
     runs-on: macos-latest
+    environment: review-production-runtime
     timeout-minutes: 30
     steps:
       - name: Check out exact trusted runtime
@@ -69,16 +70,28 @@ jobs:
           test "$(git rev-parse HEAD)" = "${TRUSTED_RUNTIME_COMMIT}"
           test -z "$(git config --local --get-regexp '^(http\..*\.extraheader|credential\..*)$' || true)"
 
-      # Prototype-only install. Production rollout is gated on replacing this
-      # per-run install with a prebuilt, digest-verified runtime bundle.
-      - name: Install and attest exact Grok CLI prototype
+      - name: Download and attest exact Grok runtime asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GROK_ASSET_NAME: grok-0.2.112-darwin-arm64
+          GROK_ASSET_SIZE: "129363664"
+          GROK_ASSET_SHA256: 5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4
         run: |
           set -euo pipefail
           test "$(uname -m)" = "arm64"
-          npm install --global --no-audit --no-fund @xai-official/grok@0.2.112
-          test -z "$(git status --porcelain=v1 --untracked-files=all)"
-          test -x "${HOME}/.grok/bin/grok"
-          GROK_BIN="${HOME}/.grok/bin/grok" node --input-type=module -e 'import { attestLocalGrok } from "./apps/grok-review-app/src/actions/model-review.mjs"; attestLocalGrok({ expectedVersion: "0.2.112", expectedSha256: "5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4" });'
+          install -d -m 700 "$RUNNER_TEMP/grok-runtime"
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$GROK_ASSET_NAME" \
+            --dir "$RUNNER_TEMP/grok-runtime"
+          GROK_BIN="$RUNNER_TEMP/grok-runtime/$GROK_ASSET_NAME"
+          test -f "$GROK_BIN" && test ! -L "$GROK_BIN"
+          test "$(stat -f %z "$GROK_BIN")" = "$GROK_ASSET_SIZE"
+          test "$(shasum -a 256 "$GROK_BIN" | awk '{print $1}')" = "$GROK_ASSET_SHA256"
+          chmod 500 "$GROK_BIN"
+          GROK_BIN="$GROK_BIN" node --input-type=module -e \
+            'import { attestLocalGrok } from "./apps/grok-review-app/src/actions/model-review.mjs"; attestLocalGrok({ expectedVersion: "0.2.112", expectedSha256: process.env.GROK_ASSET_SHA256 });'
+          echo "GROK_BIN=$GROK_BIN" >> "$GITHUB_ENV"
 
       - name: Run exact-head Grok App review
         env:
@@ -105,7 +118,6 @@ jobs:
           RECEIPT_PUBLIC_KEY: ${{ vars.RECEIPT_SIGNING_PUBLIC_KEY }}
           GROK_AUTH_JSON: ${{ secrets.GROK_AUTH_JSON }}
         run: |
-          export GROK_BIN="${HOME}/.grok/bin/grok"
           exec node apps/grok-review-app/src/actions/runner-cli.mjs
 
       - name: Remove transient review directories

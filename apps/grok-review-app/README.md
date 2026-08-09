@@ -28,7 +28,8 @@ selected target repository
 Cloudflare Worker ── D1 control metadata
         │ transactional outbox + workflow_dispatch with numeric identities only
         ▼
-central macos-latest GitHub Actions workflow
+static staging or production macos-latest GitHub Actions workflow
+        ├─ download and attest the immutable same-tag Grok asset
         ├─ mint exact-repository installation token
         ├─ collect exact PR head, merge-base diff, and AGENTS.md blobs
         ├─ revoke/remove GitHub credentials
@@ -42,8 +43,8 @@ The Worker exposes exactly `POST /github/webhooks`. It verifies the raw webhook
 HMAC before JSON parsing, applies event and payload bounds, deduplicates
 `X-GitHub-Delivery`, and admits only active authorized installations. Admission
 and an idempotent dispatch job are committed together in D1; scheduled and
-best-effort drains lease the durable outbox before dispatching the central
-workflow. D1 stores installation,
+best-effort drains lease the durable outbox before dispatching the bound
+static staging or production workflow. D1 stores installation,
 delivery, request, workflow/check, and sanitized receipt metadata only. It does
 not store repository code, diffs, prompts, GitHub tokens, Grok credentials, or
 model output.
@@ -77,13 +78,13 @@ environment URL or generated App credential.
 The App is private (`public: false`), does not request OAuth during installation,
 and has exactly these repository permissions:
 
-| Permission | Access |
-|---|---|
-| Contents | Read |
+| Permission    | Access       |
+| ------------- | ------------ |
+| Contents      | Read         |
 | Pull requests | Read & write |
-| Checks | Read & write |
-| Issues | Read |
-| Metadata | Read |
+| Checks        | Read & write |
+| Issues        | Read         |
+| Metadata      | Read         |
 
 It subscribes only to `pull_request`, `issue_comment`, `check_run`,
 `installation`, and `installation_repositories`. It has no target-repository
@@ -102,22 +103,22 @@ reviews use the
 
 Non-secret vars:
 
-| Name | Meaning |
-|---|---|
-| `CONTROL_REPO_OWNER` | Owner of the central control repository |
-| `CONTROL_REPO_NAME` | Central control repository name |
-| `CONTROL_WORKFLOW_FILE` | `grok-review-app-worker.yml` |
-| `CONTROL_REF` | Immutable control-repo tag `grok-review-runtime-<40 lowercase hex>`; must point to the same commit as `GROK_REVIEW_RUNTIME_COMMIT`. GitHub `workflow_dispatch.ref` accepts a branch or tag name, not a raw SHA; the runner still hard-gates `GITHUB_SHA`, checked-out HEAD, and bundle digest |
-| `GITHUB_APP_ID` | Canonical decimal App ID used for App-owned Check validation |
+| Name                    | Meaning                                                                                                                                                                                                                                                                                       |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CONTROL_REPO_OWNER`    | Owner of the central control repository                                                                                                                                                                                                                                                       |
+| `CONTROL_REPO_NAME`     | Central control repository name                                                                                                                                                                                                                                                               |
+| `CONTROL_WORKFLOW_FILE` | Static environment-bound runner: `grok-review-app-worker-staging.yml` or `grok-review-app-worker-production.yml`                                                                                                                                                                              |
+| `CONTROL_REF`           | Immutable control-repo tag `grok-review-runtime-<40 lowercase hex>`; must point to the same commit as `GROK_REVIEW_RUNTIME_COMMIT`. GitHub `workflow_dispatch.ref` accepts a branch or tag name, not a raw SHA; the runner still hard-gates `GITHUB_SHA`, checked-out HEAD, and bundle digest |
+| `GITHUB_APP_ID`         | Canonical decimal App ID used for App-owned Check validation                                                                                                                                                                                                                                  |
 
 Secrets:
 
-| Name | Meaning |
-|---|---|
-| `WEBHOOK_SECRET` | High-entropy GitHub App webhook secret, 32–4096 UTF-8 bytes without control characters |
-| `RUNNER_CALLBACK_SECRET` | HMAC key shared only with the central workflow, 32–4096 UTF-8 bytes without control characters |
-| `CONTROL_REPO_TOKEN` | Fine-grained token with Actions write on the central control repository only |
-| `RECEIPT_PUBLIC_KEYS_JSON` | Trusted map of Ed25519 public SPKI keys keyed by the runner-derived key ID |
+| Name                       | Meaning                                                                                        |
+| -------------------------- | ---------------------------------------------------------------------------------------------- |
+| `WEBHOOK_SECRET`           | High-entropy GitHub App webhook secret, 32–4096 UTF-8 bytes without control characters         |
+| `RUNNER_CALLBACK_SECRET`   | HMAC key shared only with the central workflow, 32–4096 UTF-8 bytes without control characters |
+| `CONTROL_REPO_TOKEN`       | Fine-grained token with Actions write on the central control repository only                   |
+| `RECEIPT_PUBLIC_KEYS_JSON` | Trusted map of Ed25519 public SPKI keys keyed by the runner-derived key ID                     |
 
 `RECEIPT_PUBLIC_KEYS_JSON` is stored as a Worker secret because it is operational
 trust configuration, even though it contains public keys. The Worker receives
@@ -129,28 +130,43 @@ callback body before D1 accepts a state transition.
 
 ### Central GitHub Actions repository
 
-Secrets:
+Two static dispatch workflows own the runner entrypoints:
 
-| Name | Meaning |
-|---|---|
-| `GROK_REVIEW_APP_PRIVATE_KEY` | GitHub-generated **RSA** App private key (PEM) |
-| `GROK_AUTH_JSON` | Central dedicated Grok Build login material |
-| `RUNNER_CALLBACK_SECRET` | Same callback HMAC key configured on the Worker |
-| `RECEIPT_SIGNING_PRIVATE_KEY` | Separate **Ed25519** receipt-signing private key (PKCS#8 PEM) |
+| Workflow file                           | GitHub environment          |
+| --------------------------------------- | --------------------------- |
+| `grok-review-app-worker-staging.yml`    | `review-staging-runtime`    |
+| `grok-review-app-worker-production.yml` | `review-production-runtime` |
 
-Variables:
+Each workflow accepts the same seven closed `workflow_dispatch` inputs, checks
+out the immutable runtime tag, downloads and attests the exact release asset
+`grok-0.2.112-darwin-arm64` (size `129363664`, SHA-256
+`5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4`) from the
+same repository and tag using the job's read-only `github.token`, and hands the
+verified absolute `GROK_BIN` to the runner through `GITHUB_ENV`. There is no
+per-run `npm install`, no mutable action tag, and no home-installed Grok path.
 
-| Name | Meaning |
-|---|---|
-| `GROK_REVIEW_APP_CLIENT_ID` | App client ID used as the GitHub App JWT issuer |
-| `GROK_REVIEW_APP_ID` | Numeric App ID used for App/check identity validation |
-| `GROK_REVIEW_WORKER_URL` | Worker origin, without the webhook path |
-| `GROK_REVIEW_RUNTIME_COMMIT` | Exact trusted plugin commit used by the runner |
+Secrets (environment-scoped except where noted):
+
+| Name                          | Meaning                                                                                     |
+| ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `GROK_REVIEW_APP_PRIVATE_KEY` | GitHub-generated **RSA** App private key (PEM)                                              |
+| `GROK_AUTH_JSON`              | Central dedicated Grok Build login material (repository secret shared by both environments) |
+| `RUNNER_CALLBACK_SECRET`      | Same callback HMAC key configured on the Worker                                             |
+| `RECEIPT_SIGNING_PRIVATE_KEY` | Separate **Ed25519** receipt-signing private key (PKCS#8 PEM)                               |
+
+Variables (environment-scoped):
+
+| Name                                | Meaning                                                            |
+| ----------------------------------- | ------------------------------------------------------------------ |
+| `GROK_REVIEW_APP_CLIENT_ID`         | App client ID used as the GitHub App JWT issuer                    |
+| `GROK_REVIEW_APP_ID`                | Numeric App ID used for App/check identity validation              |
+| `GROK_REVIEW_WORKER_URL`            | Worker origin, without the webhook path                            |
+| `GROK_REVIEW_RUNTIME_COMMIT`        | Exact trusted plugin commit used by the runner                     |
 | `GROK_REVIEW_RUNTIME_BUNDLE_SHA256` | SHA-256 of `git archive --format=tar <GROK_REVIEW_RUNTIME_COMMIT>` |
-| `GROK_CLI_VERSION` | Exact supported CLI version: `0.2.112` |
-| `RECEIPT_SIGNING_PUBLIC_KEY` | Public Ed25519 SPKI PEM matching the receipt private key |
-| `GROK_MODEL` | Optional pinned model override |
-| `GROK_EFFORT` | Optional pinned effort override |
+| `GROK_CLI_VERSION`                  | Exact supported CLI version: `0.2.112`                             |
+| `RECEIPT_SIGNING_PUBLIC_KEY`        | Public Ed25519 SPKI PEM matching the receipt private key           |
+| `GROK_MODEL`                        | Optional pinned model override                                     |
+| `GROK_EFFORT`                       | Optional pinned effort override                                    |
 
 The receipt key ID is derived from the Ed25519 public SPKI; it is not another
 configured ID. `RECEIPT_SIGNING_PUBLIC_KEY` must match both
@@ -204,5 +220,6 @@ node scripts/validate.mjs
 
 These checks support implementation confidence but do not qualify the external
 App lifecycle. Production acceptance requires an installed App, a real webhook,
-the central hosted workflow, an actual Grok provider launch, and an App-authored
-review/check on the exact current head.
+the static environment-bound hosted workflow, an actual Grok provider launch
+from the immutable release asset, and an App-authored review/check on the exact
+current head.

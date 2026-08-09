@@ -16,7 +16,7 @@ import {
   loadBootstrapAbortConfig,
   loadRunnerConfig,
   parseWorkflowInputs,
-  runCentralReview
+  runCentralReview,
 } from "../apps/grok-review-app/src/actions/central-runner.mjs";
 import { buildPrReviewPayload } from "../scripts/ci/lib/build-pr-review-payload.mjs";
 import { collectRightSideMap } from "../scripts/ci/lib/diff-right-lines.mjs";
@@ -32,7 +32,7 @@ const RECEIPT_ENVELOPE = Object.freeze({
   alg: "Ed25519",
   kid: "1".repeat(64),
   receipt_sha256: "2".repeat(64),
-  signature: "A".repeat(86)
+  signature: "A".repeat(86),
 });
 
 function inputs(triggerKind = "automatic") {
@@ -43,7 +43,7 @@ function inputs(triggerKind = "automatic") {
     pull_number: "17",
     trigger_kind: triggerKind,
     trigger_id: "4001",
-    actor_id: "5001"
+    actor_id: "5001",
   });
 }
 
@@ -62,14 +62,14 @@ function config() {
     callbackSecret: "callback-secret",
     receiptPrivateKey: "PRIVATE RECEIPT KEY",
     receiptPublicKey: "PUBLIC RECEIPT KEY",
-    grokAuthJson: "{\"xai\":{\"key\":\"grok-only\"}}",
+    grokAuthJson: '{"xai":{"key":"grok-only"}}',
     model: "grok-code-fast-1",
     modelVersion: "grok-code-fast-1",
     effort: "high",
     grokCliVersion: EXACT_GROK_CLI.version,
     grokCliSha256: EXACT_GROK_CLI.darwinArm64Sha256,
     grokPackageIntegritySha256: EXACT_GROK_CLI.packageIntegritySha256,
-    grokPackageGitCommit: EXACT_GROK_CLI.packageGitCommit
+    grokPackageGitCommit: EXACT_GROK_CLI.packageGitCommit,
   });
 }
 
@@ -87,7 +87,7 @@ function authorityContext(headSha = HEAD) {
     baseRef: "main",
     draft: false,
     isFork: true,
-    actor: null
+    actor: null,
   });
 }
 
@@ -101,7 +101,7 @@ function packet(headSha = HEAD) {
     "-const answer = 40;",
     "+const answer = 41;",
     " export { answer };",
-    ""
+    "",
   ].join("\n");
   return Object.freeze({
     identity: Object.freeze({
@@ -111,14 +111,14 @@ function packet(headSha = HEAD) {
       baseRef: "main",
       baseTipSha: BASE,
       mergeBaseSha: MERGE_BASE,
-      headSha
+      headSha,
     }),
     patch: Object.freeze({
       encoding: "utf8",
       content: patch,
       bytes: Buffer.byteLength(patch),
       digest: "3".repeat(64),
-      untrusted: true
+      untrusted: true,
     }),
     receipt: Object.freeze({
       patchDigest: "3".repeat(64),
@@ -131,11 +131,11 @@ function packet(headSha = HEAD) {
             mode: "100644",
             blobOid: "4".repeat(40),
             bytes: 12,
-            sha256: "5".repeat(64)
-          })
-        ])
-      })
-    })
+            sha256: "5".repeat(64),
+          }),
+        ]),
+      }),
+    }),
   });
 }
 
@@ -152,7 +152,7 @@ function claim(triggerKind = "automatic") {
     expected_head_sha: triggerKind === "automatic" ? HEAD : null,
     receipt_id: RECEIPT_ID,
     policy_version: "1",
-    workflow_run_id: "6001"
+    workflow_run_id: "6001",
   };
 }
 
@@ -167,7 +167,10 @@ function makeHarness(options = {}) {
       claimCount += 1;
       events.push(`claim:${claimCount}`);
       if (options.claimAt) return options.claimAt(claimCount);
-      return { ...claim(triggerKind), result: claimCount === 1 ? "claimed" : "already_claimed" };
+      return {
+        ...claim(triggerKind),
+        result: claimCount === 1 ? "claimed" : "already_claimed",
+      };
     },
     async authorized() {
       events.push("callback:authorized");
@@ -190,9 +193,9 @@ function makeHarness(options = {}) {
       assert.deepEqual(value.envelope, RECEIPT_ENVELOPE);
       return {
         result: "accepted",
-        receipt_id: value.receipt.receipt_id
+        receipt_id: value.receipt.receipt_id,
       };
-    }
+    },
   };
 
   const deps = {
@@ -211,7 +214,7 @@ function makeHarness(options = {}) {
         packageIntegritySha256: EXACT_GROK_CLI.packageIntegritySha256,
         packageGitCommit: EXACT_GROK_CLI.packageGitCommit,
         identityDigest: "6".repeat(64),
-        releaseIdentityDigest: "7".repeat(64)
+        releaseIdentityDigest: "7".repeat(64),
       };
     },
     createAppJwt() {
@@ -219,7 +222,12 @@ function makeHarness(options = {}) {
       return "app-jwt";
     },
     createGitHubClient({ token }) {
-      return { token, request() { throw new Error("network_not_expected"); } };
+      return {
+        token,
+        request() {
+          throw new Error("network_not_expected");
+        },
+      };
     },
     async mintInstallationToken({ phase, repositoryId }) {
       tokenCounter += 1;
@@ -233,7 +241,8 @@ function makeHarness(options = {}) {
     async fetchAuthoritativeReviewContext(value) {
       authorityCount += 1;
       events.push(`authority:${authorityCount}`);
-      if (options.authorityAt) return options.authorityAt(authorityCount, value);
+      if (options.authorityAt)
+        return options.authorityAt(authorityCount, value);
       if (triggerKind === "automatic") {
         assert.equal(value.expectedHeadSha, HEAD);
         assert.equal(value.expectedTriggerId, "4001");
@@ -248,7 +257,7 @@ function makeHarness(options = {}) {
         appId: "7001",
         appSlug: "grok-review",
         botId: "9001",
-        botLogin: "grok-review[bot]"
+        botLogin: "grok-review[bot]",
       };
     },
     async createOrReconcileCheckRun(value) {
@@ -258,7 +267,7 @@ function makeHarness(options = {}) {
         id: "8001",
         status: "in_progress",
         conclusion: null,
-        reconciled: false
+        reconciled: false,
       };
     },
     async completeCheckRun(value) {
@@ -267,7 +276,7 @@ function makeHarness(options = {}) {
       return {
         id: value.checkId,
         status: "completed",
-        conclusion: value.conclusion
+        conclusion: value.conclusion,
       };
     },
     async collectCanonicalReviewPacket(value) {
@@ -292,17 +301,20 @@ function makeHarness(options = {}) {
         "grokBinary",
         "jobMarker",
         "model",
-        "packet"
+        "packet",
       ]);
       assert.deepEqual(value.expectedGrokIdentity, {
         sha256: EXACT_GROK_CLI.darwinArm64Sha256,
         identityDigest: "6".repeat(64),
-        releaseIdentityDigest: "7".repeat(64)
+        releaseIdentityDigest: "7".repeat(64),
       });
       assert.equal("githubAppPrivateKey" in value, false);
       assert.equal("callbackSecret" in value, false);
       assert.equal("receiptPrivateKey" in value, false);
-      assert.equal(JSON.stringify(value.packet).includes("collect-token"), false);
+      assert.equal(
+        JSON.stringify(value.packet).includes("collect-token"),
+        false,
+      );
       if (options.modelError) throw options.modelError;
       return {
         providerLaunched: true,
@@ -310,14 +322,14 @@ function makeHarness(options = {}) {
         providerProcess: {
           pid: 12345,
           startToken: "test-start-token",
-          processGroupId: 12345
+          processGroupId: 12345,
         },
         durationMs: 42,
         review: options.review ?? {
           verdict: "pass",
           summary: "The exact-head change is clean.",
-          findings: []
-        }
+          findings: [],
+        },
       };
     },
     collectRightSideMap,
@@ -354,7 +366,7 @@ function makeHarness(options = {}) {
     now: (() => {
       let tick = 0;
       return () => new Date(Date.UTC(2026, 6, 28, 12, 0, tick++));
-    })()
+    })(),
   };
   return { events, callback, deps };
 }
@@ -363,29 +375,31 @@ test("workflow inputs preserve decimal strings and reject ambiguous shape", () =
   assert.equal(inputs().repositoryId, "3001");
   assert.equal(inputs().pullNumberAsNumber, 17);
   assert.throws(
-    () => parseWorkflowInputs({
-      request_id: "1",
-      installation_id: "2",
-      repository_id: "3",
-      pull_number: "1.0",
-      trigger_kind: "automatic",
-      trigger_id: "4",
-      actor_id: "5"
-    }),
-    /invalid_pull_number/
+    () =>
+      parseWorkflowInputs({
+        request_id: "1",
+        installation_id: "2",
+        repository_id: "3",
+        pull_number: "1.0",
+        trigger_kind: "automatic",
+        trigger_id: "4",
+        actor_id: "5",
+      }),
+    /invalid_pull_number/,
   );
   assert.throws(
-    () => parseWorkflowInputs({
-      request_id: "1",
-      installation_id: "2",
-      repository_id: "3",
-      pull_number: "1",
-      trigger_kind: "automatic",
-      trigger_id: "4",
-      actor_id: "5",
-      extra: "6"
-    }),
-    /invalid_workflow_inputs/
+    () =>
+      parseWorkflowInputs({
+        request_id: "1",
+        installation_id: "2",
+        repository_id: "3",
+        pull_number: "1",
+        trigger_kind: "automatic",
+        trigger_id: "4",
+        actor_id: "5",
+        extra: "6",
+      }),
+    /invalid_workflow_inputs/,
   );
 });
 
@@ -407,33 +421,40 @@ test("runtime configuration hard-gates exact commit, Node, and CLI version", () 
     GROK_REVIEW_EFFORT: "high",
     GROK_REVIEW_NODE_VERSION: process.version.slice(1),
     GROK_REVIEW_RUNTIME_BUNDLE_SHA256: "f".repeat(64),
-    GROK_CLI_VERSION: EXACT_GROK_CLI.version
+    GROK_CLI_VERSION: EXACT_GROK_CLI.version,
   };
-  assert.equal(loadRunnerConfig(env, { runtimeRoot: "/trusted/runtime" }).githubAppId, "7001");
+  assert.equal(
+    loadRunnerConfig(env, { runtimeRoot: "/trusted/runtime" }).githubAppId,
+    "7001",
+  );
   const defaults = { ...env };
   delete defaults.GROK_REVIEW_MODEL;
   delete defaults.GROK_REVIEW_MODEL_VERSION;
   delete defaults.GROK_REVIEW_EFFORT;
   assert.deepEqual(
     {
-      model: loadRunnerConfig(defaults, { runtimeRoot: "/trusted/runtime" }).model,
-      effort: loadRunnerConfig(defaults, { runtimeRoot: "/trusted/runtime" }).effort
+      model: loadRunnerConfig(defaults, { runtimeRoot: "/trusted/runtime" })
+        .model,
+      effort: loadRunnerConfig(defaults, { runtimeRoot: "/trusted/runtime" })
+        .effort,
     },
-    { model: "grok-code-fast-1", effort: "high" }
+    { model: "grok-code-fast-1", effort: "high" },
   );
   assert.throws(
-    () => loadRunnerConfig(
-      { ...env, GROK_REVIEW_RUNTIME_COMMIT: "9".repeat(40) },
-      { runtimeRoot: "/trusted/runtime" }
-    ),
-    /runtime_commit_mismatch/
+    () =>
+      loadRunnerConfig(
+        { ...env, GROK_REVIEW_RUNTIME_COMMIT: "9".repeat(40) },
+        { runtimeRoot: "/trusted/runtime" },
+      ),
+    /runtime_commit_mismatch/,
   );
   assert.throws(
-    () => loadRunnerConfig(
-      { ...env, GROK_CLI_VERSION: "0.2.113" },
-      { runtimeRoot: "/trusted/runtime" }
-    ),
-    /grok_cli_version_mismatch/
+    () =>
+      loadRunnerConfig(
+        { ...env, GROK_CLI_VERSION: "0.2.113" },
+        { runtimeRoot: "/trusted/runtime" },
+      ),
+    /grok_cli_version_mismatch/,
   );
 });
 
@@ -444,7 +465,7 @@ test("pre-run configuration failure can claim and abort the exact bound workflow
     GROK_REVIEW_WORKER_ORIGIN: "https://worker.example",
     RUNNER_CALLBACK_SECRET: "x".repeat(32),
     // Full configuration is intentionally absent and must not be needed.
-    GROK_CLI_VERSION: "wrong"
+    GROK_CLI_VERSION: "wrong",
   });
   const calls = [];
   const result = await abortBootstrapFailure({
@@ -455,50 +476,61 @@ test("pre-run configuration failure can claim and abort the exact bound workflow
         return {
           result: "claimed",
           request_id: "1001",
-          workflow_run_id: "6001"
+          workflow_run_id: "6001",
         };
       },
       async abort(value) {
         calls.push(["abort", value]);
         return { result: "aborted", request_id: "1001" };
-      }
-    }
+      },
+    },
   });
   assert.equal(result, true);
   assert.deepEqual(calls, [
     ["claim", { requestId: "1001", workflowRunId: "6001" }],
-    ["abort", {
-      requestId: "1001",
-      workflowRunId: "6001",
-      status: "failed",
-      checkId: null
-    }]
+    [
+      "abort",
+      {
+        requestId: "1001",
+        workflowRunId: "6001",
+        status: "failed",
+        checkId: null,
+      },
+    ],
   ]);
   assert.throws(
-    () => loadBootstrapAbortConfig({
-      INPUT_REQUEST_ID: "01001",
-      GITHUB_RUN_ID: "6001",
-      GROK_REVIEW_WORKER_ORIGIN: "https://worker.example",
-      RUNNER_CALLBACK_SECRET: "x".repeat(32)
-    }),
-    /bootstrap_abort_unavailable/
+    () =>
+      loadBootstrapAbortConfig({
+        INPUT_REQUEST_ID: "01001",
+        GITHUB_RUN_ID: "6001",
+        GROK_REVIEW_WORKER_ORIGIN: "https://worker.example",
+        RUNNER_CALLBACK_SECRET: "x".repeat(32),
+      }),
+    /bootstrap_abort_unavailable/,
   );
 });
 
 test("credential boundary actually queries local Git config and fails closed", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-runner-credential-test-"));
+  const root = fs.mkdtempSync(
+    path.join(os.tmpdir(), "grok-runner-credential-test-"),
+  );
   const prior = new Map();
   try {
-    for (const key of ["GITHUB_TOKEN", "GH_TOKEN", "GIT_ASKPASS", "SSH_ASKPASS"]) {
+    for (const key of [
+      "GITHUB_TOKEN",
+      "GH_TOKEN",
+      "GIT_ASKPASS",
+      "SSH_ASKPASS",
+    ]) {
       prior.set(key, process.env[key]);
       delete process.env[key];
     }
     assert.equal(
       spawnSync("git", ["init", "--quiet", root], {
         encoding: "utf8",
-        shell: false
+        shell: false,
       }).status,
-      0
+      0,
     );
     assert.equal(
       spawnSync(
@@ -509,15 +541,15 @@ test("credential boundary actually queries local Git config and fails closed", (
           "config",
           "--local",
           "http.https://github.com/.extraheader",
-          "AUTHORIZATION: basic test-credential"
+          "AUTHORIZATION: basic test-credential",
         ],
-        { encoding: "utf8", shell: false }
+        { encoding: "utf8", shell: false },
       ).status,
-      0
+      0,
     );
     assert.throws(
       () => assertCredentialBoundary(root, new Set()),
-      /checkout_credential_present_before_model/
+      /checkout_credential_present_before_model/,
     );
   } finally {
     for (const [key, value] of prior) {
@@ -537,61 +569,71 @@ test("automatic zero-finding review uses strict token phases and posts COMMENT",
     },
     onComplete(value) {
       completion = value;
-    }
+    },
   });
-  const result = await runCentralReview({
-    inputs: inputs(),
-    config: config(),
-    callback: harness.callback,
-    cancelRequested: () => false
-  }, harness.deps);
+  const result = await runCentralReview(
+    {
+      inputs: inputs(),
+      config: config(),
+      callback: harness.callback,
+      cancelRequested: () => false,
+    },
+    harness.deps,
+  );
 
   assert.equal(result.status, "completed");
   assert.equal(result.findingCount, 0);
   assert.equal(result.providerLaunched, true);
   assert.match(pending.body, /The exact-head change is clean/);
   assert.deepEqual(pending.comments, []);
-  assert.match(completion.summary, new RegExp(`Receipt: \\\`${RECEIPT_ID}\\\``));
+  assert.match(
+    completion.summary,
+    new RegExp(`Receipt: \\\`${RECEIPT_ID}\\\``),
+  );
   assert.equal(
     completion.summary.match(/<!-- grok-review-receipt:v1:/g)?.length,
-    1
+    1,
   );
   assert.equal(
     pending.body.match(/<!-- grok-review-receipt:v1:[^>]+ -->/)?.[0],
-    completion.summary.match(/<!-- grok-review-receipt:v1:[^>]+ -->/)?.[0]
+    completion.summary.match(/<!-- grok-review-receipt:v1:[^>]+ -->/)?.[0],
   );
   assert.deepEqual(
     harness.events.filter((event) => event.startsWith("mint:")),
-    ["mint:authority", "mint:check", "mint:collect", "mint:post", "mint:check"]
+    ["mint:authority", "mint:check", "mint:collect", "mint:post", "mint:check"],
   );
   assert.equal(
     harness.events.filter((event) => event === "jwt").length,
     5,
-    "every installation-token phase must use a fresh App JWT"
+    "every installation-token phase must use a fresh App JWT",
   );
   assert.ok(
     harness.events.lastIndexOf("jwt") > harness.events.indexOf("model"),
-    "post/final-check App JWTs must be minted after the model"
+    "post/final-check App JWTs must be minted after the model",
   );
   assert.deepEqual(
     harness.events.filter((event) => event.startsWith("revoke:")),
-    ["revoke:authority", "revoke:check", "revoke:collect", "revoke:post", "revoke:check"]
+    [
+      "revoke:authority",
+      "revoke:check",
+      "revoke:collect",
+      "revoke:post",
+      "revoke:check",
+    ],
   );
   assert.ok(
-    harness.events.indexOf("revoke:collect")
-      < harness.events.indexOf("model")
+    harness.events.indexOf("revoke:collect") < harness.events.indexOf("model"),
   );
   assert.ok(
-    harness.events.indexOf("authority:1")
-      < harness.events.indexOf("callback:authorized")
+    harness.events.indexOf("authority:1") <
+      harness.events.indexOf("callback:authorized"),
   );
   assert.ok(
-    harness.events.indexOf("callback:authorized")
-      < harness.events.indexOf("claim:2")
+    harness.events.indexOf("callback:authorized") <
+      harness.events.indexOf("claim:2"),
   );
   assert.ok(
-    harness.events.indexOf("claim:2")
-      < harness.events.indexOf("check:create")
+    harness.events.indexOf("claim:2") < harness.events.indexOf("check:create"),
   );
   assert.ok(harness.events.includes("check:complete:neutral"));
   assert.ok(harness.events.includes("callback:terminal:completed"));
@@ -605,31 +647,30 @@ test("code-owned executable attestation must bind package identity before GitHub
     sha256: EXACT_GROK_CLI.darwinArm64Sha256,
     size: 129_363_664,
     packageIntegritySha256: "0".repeat(64),
-    packageGitCommit: EXACT_GROK_CLI.packageGitCommit
+    packageGitCommit: EXACT_GROK_CLI.packageGitCommit,
   });
   await assert.rejects(
-    runCentralReview({
-      inputs: inputs(),
-      config: config(),
-      callback: harness.callback
-    }, harness.deps),
-    (error) => (
-      error.code === "central_runner_failed"
-      && error.causeCode === "grok_executable_attestation_mismatch"
-    )
+    runCentralReview(
+      {
+        inputs: inputs(),
+        config: config(),
+        callback: harness.callback,
+      },
+      harness.deps,
+    ),
+    (error) =>
+      error.code === "central_runner_failed" &&
+      error.causeCode === "grok_executable_attestation_mismatch",
   );
   assert.equal(
     harness.events.some((event) => event.startsWith("mint:")),
-    false
+    false,
   );
   assert.ok(harness.events.includes("callback:abort:failed:null"));
 });
 
 test("model isolation never executes the mutable discovered Grok path", () => {
-  const root = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    ".."
-  );
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const source = fs.readFileSync(
     path.join(
       root,
@@ -637,16 +678,19 @@ test("model isolation never executes the mutable discovered Grok path", () => {
       "grok-review-app",
       "src",
       "actions",
-      "model-review.mjs"
+      "model-review.mjs",
     ),
-    "utf8"
+    "utf8",
   );
   assert.doesNotMatch(source, /\bgrokVersion\s*\(/);
   assert.match(source, /grok_source_identity_changed/);
-  assert.match(source, /sameExecutableRelease\(source\.attestation, pinned\.attestation\)/);
+  assert.match(
+    source,
+    /sameExecutableRelease\(source\.attestation, pinned\.attestation\)/,
+  );
   assert.ok(
-    source.indexOf("grok_materialized_release_mismatch")
-      < source.indexOf("authPath = stageAuth")
+    source.indexOf("grok_materialized_release_mismatch") <
+      source.indexOf("authPath = stageAuth"),
   );
 });
 
@@ -656,57 +700,67 @@ test("validated same-hunk suggestion becomes a native GitHub suggestion", async 
     review: {
       verdict: "needs_changes",
       summary: "One exact bug is present.",
-      findings: [{
-        severity: "high",
-        title: "Wrong answer",
-        body: "This must be 42.",
-        file: "src/app.js",
-        line: 1,
-        suggestion: {
-          startLine: 1,
-          endLine: 1,
-          replacement: "const answer = 42;"
-        }
-      }]
+      findings: [
+        {
+          severity: "high",
+          title: "Wrong answer",
+          body: "This must be 42.",
+          file: "src/app.js",
+          line: 1,
+          suggestion: {
+            startLine: 1,
+            endLine: 1,
+            replacement: "const answer = 42;",
+          },
+        },
+      ],
     },
     onPending(value) {
       pending = value;
-    }
+    },
   });
-  const result = await runCentralReview({
-    inputs: inputs(),
-    config: config(),
-    callback: harness.callback
-  }, harness.deps);
+  const result = await runCentralReview(
+    {
+      inputs: inputs(),
+      config: config(),
+      callback: harness.callback,
+    },
+    harness.deps,
+  );
   assert.equal(result.findingCount, 1);
   assert.equal(pending.comments.length, 1);
   assert.equal(pending.comments[0].path, "src/app.js");
-  assert.match(pending.comments[0].body, /```suggestion\nconst answer = 42;\n```/);
+  assert.match(
+    pending.comments[0].body,
+    /```suggestion\nconst answer = 42;\n```/,
+  );
 });
 
 test("manual review snapshots and collects the live current head", async () => {
   const harness = makeHarness({
     triggerKind: "manual_comment",
-    manualHead: NEW_HEAD
+    manualHead: NEW_HEAD,
   });
-  const result = await runCentralReview({
-    inputs: inputs("manual_comment"),
-    config: config(),
-    callback: harness.callback
-  }, harness.deps);
+  const result = await runCentralReview(
+    {
+      inputs: inputs("manual_comment"),
+      config: config(),
+      callback: harness.callback,
+    },
+    harness.deps,
+  );
   assert.equal(result.status, "completed");
   assert.ok(harness.events.includes("collect"));
   assert.ok(
-    harness.events.indexOf("authority:1")
-      < harness.events.indexOf("callback:authorized")
+    harness.events.indexOf("authority:1") <
+      harness.events.indexOf("callback:authorized"),
   );
   assert.ok(
-    harness.events.indexOf("callback:authorized")
-      < harness.events.indexOf("claim:2")
+    harness.events.indexOf("callback:authorized") <
+      harness.events.indexOf("claim:2"),
   );
   assert.ok(
-    harness.events.indexOf("claim:2")
-      < harness.events.indexOf("check:create")
+    harness.events.indexOf("claim:2") < harness.events.indexOf("check:create"),
   );
 });
 
@@ -717,18 +771,20 @@ test("unauthorized manual caller stops before check, collection, and Grok", asyn
     triggerKind: "manual_comment",
     authorityAt() {
       throw denied;
-    }
+    },
   });
   await assert.rejects(
-    runCentralReview({
-      inputs: inputs("manual_comment"),
-      config: config(),
-      callback: harness.callback
-    }, harness.deps),
-    (error) => (
-      error.code === "central_runner_failed"
-      && error.causeCode === "actor_permission_rejected"
-    )
+    runCentralReview(
+      {
+        inputs: inputs("manual_comment"),
+        config: config(),
+        callback: harness.callback,
+      },
+      harness.deps,
+    ),
+    (error) =>
+      error.code === "central_runner_failed" &&
+      error.causeCode === "actor_permission_rejected",
   );
   assert.equal(harness.events.includes("model"), false);
   assert.equal(harness.events.includes("check:create"), false);
@@ -736,7 +792,7 @@ test("unauthorized manual caller stops before check, collection, and Grok", asyn
   assert.equal(harness.events.includes("callback:authorized"), false);
   assert.deepEqual(
     harness.events.filter((event) => event.startsWith("mint:")),
-    ["mint:authority"]
+    ["mint:authority"],
   );
   assert.ok(harness.events.includes("callback:abort:failed:null"));
 });
@@ -748,18 +804,20 @@ test("manual authorization supersession fence fails before Check and Grok", asyn
       const error = new Error("invalid_state_transition");
       error.code = "invalid_state_transition";
       throw error;
-    }
+    },
   });
   await assert.rejects(
-    runCentralReview({
-      inputs: inputs("manual_comment"),
-      config: config(),
-      callback: harness.callback
-    }, harness.deps),
-    (error) => (
-      error.code === "central_runner_cancelled"
-      && error.causeCode === "invalid_state_transition"
-    )
+    runCentralReview(
+      {
+        inputs: inputs("manual_comment"),
+        config: config(),
+        callback: harness.callback,
+      },
+      harness.deps,
+    ),
+    (error) =>
+      error.code === "central_runner_cancelled" &&
+      error.causeCode === "invalid_state_transition",
   );
   assert.ok(harness.events.includes("callback:authorized"));
   assert.equal(harness.events.includes("check:create"), false);
@@ -774,18 +832,20 @@ test("stale automatic expected head never reaches authorization", async () => {
   const harness = makeHarness({
     authorityAt() {
       throw stale;
-    }
+    },
   });
   await assert.rejects(
-    runCentralReview({
-      inputs: inputs(),
-      config: config(),
-      callback: harness.callback
-    }, harness.deps),
-    (error) => (
-      error.code === "central_runner_cancelled"
-      && error.causeCode === "automatic_head_mismatch"
-    )
+    runCentralReview(
+      {
+        inputs: inputs(),
+        config: config(),
+        callback: harness.callback,
+      },
+      harness.deps,
+    ),
+    (error) =>
+      error.code === "central_runner_cancelled" &&
+      error.causeCode === "automatic_head_mismatch",
   );
   assert.equal(harness.events.includes("callback:authorized"), false);
   assert.equal(harness.events.includes("check:create"), false);
@@ -800,18 +860,20 @@ test("automatic authorization fence rejection stops before Check and Grok", asyn
       const error = new Error("invalid_state_transition");
       error.code = "invalid_state_transition";
       throw error;
-    }
+    },
   });
   await assert.rejects(
-    runCentralReview({
-      inputs: inputs(),
-      config: config(),
-      callback: harness.callback
-    }, harness.deps),
-    (error) => (
-      error.code === "central_runner_cancelled"
-      && error.causeCode === "invalid_state_transition"
-    )
+    runCentralReview(
+      {
+        inputs: inputs(),
+        config: config(),
+        callback: harness.callback,
+      },
+      harness.deps,
+    ),
+    (error) =>
+      error.code === "central_runner_cancelled" &&
+      error.causeCode === "invalid_state_transition",
   );
   assert.ok(harness.events.includes("callback:authorized"));
   assert.equal(harness.events.includes("check:create"), false);
@@ -826,15 +888,18 @@ test("persisted opaque receipt identity cannot drift across claim fences", async
       return {
         ...claim(),
         result: count === 1 ? "claimed" : "already_claimed",
-        receipt_id: count < 3 ? RECEIPT_ID : `grr_${"9".repeat(32)}`
+        receipt_id: count < 3 ? RECEIPT_ID : `grr_${"9".repeat(32)}`,
       };
-    }
+    },
   });
-  const result = await runCentralReview({
-    inputs: inputs(),
-    config: config(),
-    callback: harness.callback
-  }, harness.deps);
+  const result = await runCentralReview(
+    {
+      inputs: inputs(),
+      config: config(),
+      callback: harness.callback,
+    },
+    harness.deps,
+  );
   assert.equal(result.status, "cancelled");
   assert.equal(result.reason, "superseded_before_submit");
   assert.equal(harness.events.includes("review:create-pending"), false);
@@ -847,17 +912,23 @@ test("supersession fence before COMMENT deletes the known pending review", async
   const harness = makeHarness({
     claimAt(count) {
       if (count === 4) throw stale;
-      return { ...claim(), result: count === 1 ? "claimed" : "already_claimed" };
+      return {
+        ...claim(),
+        result: count === 1 ? "claimed" : "already_claimed",
+      };
     },
     onComplete(value) {
       completion = value;
-    }
+    },
   });
-  const result = await runCentralReview({
-    inputs: inputs(),
-    config: config(),
-    callback: harness.callback
-  }, harness.deps);
+  const result = await runCentralReview(
+    {
+      inputs: inputs(),
+      config: config(),
+      callback: harness.callback,
+    },
+    harness.deps,
+  );
   assert.equal(result.status, "cancelled");
   assert.equal(result.reason, "superseded_before_submit");
   assert.ok(harness.events.includes("review:delete-pending"));
@@ -866,7 +937,7 @@ test("supersession fence before COMMENT deletes the known pending review", async
   assert.ok(harness.events.includes("callback:terminal:cancelled"));
   assert.equal(
     completion.summary.match(/<!-- grok-review-receipt:v1:/g)?.length,
-    1
+    1,
   );
 });
 
@@ -877,13 +948,16 @@ test("head drift after COMMENT is visible as a cancelled superseded run", async 
     authorityAt(count) {
       if (count === 4) throw drift;
       return authorityContext();
-    }
+    },
   });
-  const result = await runCentralReview({
-    inputs: inputs(),
-    config: config(),
-    callback: harness.callback
-  }, harness.deps);
+  const result = await runCentralReview(
+    {
+      inputs: inputs(),
+      config: config(),
+      callback: harness.callback,
+    },
+    harness.deps,
+  );
   assert.equal(result.status, "cancelled");
   assert.equal(result.reason, "head_changed_after_submit");
   assert.ok(harness.events.includes("review:submit-comment"));
@@ -898,26 +972,30 @@ test("model/schema failure completes the known check and sends a signed failed t
     modelError: schemaError,
     onComplete(value) {
       completion = value;
-    }
+    },
   });
   await assert.rejects(
-    runCentralReview({
-      inputs: inputs(),
-      config: config(),
-      callback: harness.callback
-    }, harness.deps),
-    (error) => (
-      error.code === "central_runner_failed"
-      && error.causeCode === "E_SCHEMA"
-    )
+    runCentralReview(
+      {
+        inputs: inputs(),
+        config: config(),
+        callback: harness.callback,
+      },
+      harness.deps,
+    ),
+    (error) =>
+      error.code === "central_runner_failed" && error.causeCode === "E_SCHEMA",
   );
   assert.ok(harness.events.includes("check:complete:failure"));
   assert.ok(harness.events.includes("callback:terminal:failed"));
   assert.ok(harness.events.includes("receipt:sign"));
-  assert.match(completion.summary, new RegExp(`Receipt: \\\`${RECEIPT_ID}\\\``));
+  assert.match(
+    completion.summary,
+    new RegExp(`Receipt: \\\`${RECEIPT_ID}\\\``),
+  );
   assert.equal(
     completion.summary.match(/<!-- grok-review-receipt:v1:/g)?.length,
-    1
+    1,
   );
 });
 
@@ -928,28 +1006,30 @@ test("collection failure completes the check but never fabricates source receipt
   const harness = makeHarness({
     onComplete(value) {
       completion = value;
-    }
+    },
   });
   harness.deps.collectCanonicalReviewPacket = async () => {
     harness.events.push("collect");
     throw collectorError;
   };
   await assert.rejects(
-    runCentralReview({
-      inputs: inputs(),
-      config: config(),
-      callback: harness.callback
-    }, harness.deps),
-    (error) => (
-      error.code === "central_runner_failed"
-      && error.causeCode === "E_COLLECTOR_FETCH"
-    )
+    runCentralReview(
+      {
+        inputs: inputs(),
+        config: config(),
+        callback: harness.callback,
+      },
+      harness.deps,
+    ),
+    (error) =>
+      error.code === "central_runner_failed" &&
+      error.causeCode === "E_COLLECTOR_FETCH",
   );
   assert.ok(harness.events.includes("check:complete:failure"));
   assert.equal(harness.events.includes("receipt:sign"), false);
   assert.equal(
     harness.events.some((event) => event.startsWith("callback:terminal:")),
-    false
+    false,
   );
   assert.ok(harness.events.includes("callback:abort:failed:8001"));
   assert.doesNotMatch(completion.summary, /grok-review-receipt:v1:/);
@@ -973,31 +1053,31 @@ test("callback client binds timestamp, nonce, and exact body in the HMAC", async
           init.headers["x-grok-timestamp"],
           init.headers["x-grok-nonce"],
           init.headers["x-grok-signature"],
-          secret
+          secret,
         ),
-        true
+        true,
       );
       return new Response(JSON.stringify(claim()), {
         status: 200,
-        headers: { "content-type": "application/json" }
+        headers: { "content-type": "application/json" },
       });
-    }
+    },
   });
   const response = await client.claim({
     requestId: "1001",
-    workflowRunId: "6001"
+    workflowRunId: "6001",
   });
   assert.equal(response.request_id, "1001");
   assert.equal(observed.url, "https://worker.example/internal/callback");
   assert.equal(observed.init.redirect, "manual");
   await client.authorized({
     requestId: "1001",
-    workflowRunId: "6001"
+    workflowRunId: "6001",
   });
   assert.deepEqual(JSON.parse(observed.init.body), {
     event: "authorized",
     request_id: "1001",
-    workflow_run_id: "6001"
+    workflow_run_id: "6001",
   });
   await client.terminal({
     requestId: "1001",
@@ -1005,34 +1085,31 @@ test("callback client binds timestamp, nonce, and exact body in the HMAC", async
     status: "failed",
     checkId: "8001",
     receipt: { receipt_id: "r" },
-    envelope: { alg: "Ed25519" }
+    envelope: { alg: "Ed25519" },
   });
   const terminalBody = JSON.parse(observed.init.body);
   assert.equal("finished_at" in terminalBody, false);
-  assert.deepEqual(
-    Object.keys(terminalBody).sort(),
-    [
-      "check_id",
-      "envelope",
-      "event",
-      "receipt",
-      "request_id",
-      "status",
-      "workflow_run_id"
-    ]
-  );
+  assert.deepEqual(Object.keys(terminalBody).sort(), [
+    "check_id",
+    "envelope",
+    "event",
+    "receipt",
+    "request_id",
+    "status",
+    "workflow_run_id",
+  ]);
   await client.abort({
     requestId: "1001",
     workflowRunId: "6001",
     status: "failed",
-    checkId: null
+    checkId: null,
   });
   assert.deepEqual(JSON.parse(observed.init.body), {
     event: "abort",
     request_id: "1001",
     workflow_run_id: "6001",
     status: "failed",
-    check_id: null
+    check_id: null,
   });
 });
 
@@ -1051,13 +1128,13 @@ test("callback retries transient ambiguity with the same body and new nonce only
       if (attempt === 1) throw new TypeError("ambiguous network failure");
       return new Response(JSON.stringify(claim()), {
         status: 200,
-        headers: { "content-type": "application/json" }
+        headers: { "content-type": "application/json" },
       });
-    }
+    },
   });
   const response = await client.claim({
     requestId: "1001",
-    workflowRunId: "6001"
+    workflowRunId: "6001",
   });
   assert.equal(response.request_id, "1001");
   assert.deepEqual(nonces, ["nonce-1", "nonce-2"]);
@@ -1070,61 +1147,225 @@ test("callback retries transient ambiguity with the same body and new nonce only
     nonce: () => "semantic-nonce",
     async fetchImpl() {
       semanticAttempts += 1;
-      return new Response(JSON.stringify({ error: "invalid_state_transition" }), {
-        status: 409,
-        headers: { "content-type": "application/json" }
-      });
-    }
+      return new Response(
+        JSON.stringify({ error: "invalid_state_transition" }),
+        {
+          status: 409,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    },
   });
   await assert.rejects(
     semanticClient.claim({ requestId: "1001", workflowRunId: "6001" }),
-    /invalid_state_transition/
+    /invalid_state_transition/,
   );
   assert.equal(semanticAttempts, 1);
 });
 
-test("workflow is dispatch-only, least-privilege, exact-action pinned, and non-artifact", () => {
-  const root = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    ".."
+const WORKFLOW_INPUT_NAMES = [
+  "request_id",
+  "installation_id",
+  "repository_id",
+  "pull_number",
+  "trigger_kind",
+  "trigger_id",
+  "actor_id",
+];
+
+const REQUIRED_WORKFLOW_BINDINGS = [
+  "vars.GROK_REVIEW_APP_ID",
+  "vars.GROK_REVIEW_APP_CLIENT_ID",
+  "vars.GROK_REVIEW_WORKER_URL",
+  "vars.GROK_REVIEW_RUNTIME_COMMIT",
+  "vars.GROK_REVIEW_RUNTIME_BUNDLE_SHA256",
+  "vars.GROK_CLI_VERSION",
+  "vars.RECEIPT_SIGNING_PUBLIC_KEY",
+  "secrets.GROK_REVIEW_APP_PRIVATE_KEY",
+  "secrets.GROK_AUTH_JSON",
+  "secrets.RUNNER_CALLBACK_SECRET",
+  "secrets.RECEIPT_SIGNING_PRIVATE_KEY",
+];
+
+const STATIC_WORKFLOWS = Object.freeze([
+  {
+    file: "grok-review-app-worker-staging.yml",
+    environment: "review-staging-runtime",
+    oppositeEnvironment: "review-production-runtime",
+  },
+  {
+    file: "grok-review-app-worker-production.yml",
+    environment: "review-production-runtime",
+    oppositeEnvironment: "review-staging-runtime",
+  },
+]);
+
+function repoRoot() {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+}
+
+function readWorkflow(fileName) {
+  return fs.readFileSync(
+    path.join(repoRoot(), ".github", "workflows", fileName),
+    "utf8",
   );
-  const workflow = fs.readFileSync(
-    path.join(root, ".github", "workflows", "grok-review-app-worker.yml"),
-    "utf8"
-  );
+}
+
+function normalizeExecutableWorkflow(workflow) {
+  return workflow
+    .replace(/^name:.*\n/, "name: NORMALIZED\n")
+    .replace(
+      /^ {4}environment: review-(?:staging|production)-runtime\n/m,
+      "    environment: NORMALIZED_ENVIRONMENT\n",
+    );
+}
+
+function assertStaticWorkflowContract(
+  workflow,
+  { environment, oppositeEnvironment },
+) {
   assert.match(workflow, /workflow_dispatch:/);
   assert.doesNotMatch(workflow, /pull_request:/);
-  assert.match(workflow, /permissions:\n  contents: read/);
-  assert.match(workflow, /actions\/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5/);
-  assert.match(workflow, /actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/);
+  assert.doesNotMatch(workflow, /push:/);
+  assert.doesNotMatch(workflow, /schedule:/);
+  assert.doesNotMatch(workflow, /workflow_call:/);
+
+  for (const name of WORKFLOW_INPUT_NAMES) {
+    assert.match(workflow, new RegExp(`^ {6}${name}:$`, "m"));
+  }
+  assert.deepEqual(
+    [...workflow.matchAll(/^ {6}([a-z_]+):\n {8}description:/gm)].map(
+      (m) => m[1],
+    ),
+    WORKFLOW_INPUT_NAMES,
+  );
+
+  assert.match(workflow, new RegExp(`^ {4}environment: ${environment}$`, "m"));
+  assert.doesNotMatch(
+    workflow,
+    new RegExp(`environment: ${oppositeEnvironment}`),
+  );
+  assert.doesNotMatch(workflow, /environment:\s*\$\{\{/);
+
+  assert.match(workflow, /^permissions:\n  contents: read\n\nconcurrency:/m);
+  assert.match(workflow, /runs-on: macos-latest/);
+  assert.match(workflow, /timeout-minutes: 30/);
+  assert.match(
+    workflow,
+    /actions\/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5/,
+  );
+  assert.match(
+    workflow,
+    /actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/,
+  );
   assert.match(workflow, /persist-credentials: false/);
-  assert.match(workflow, /group: grok-review-request-\$\{\{ inputs\.request_id \}\}/);
+  assert.match(
+    workflow,
+    /group: grok-review-request-\$\{\{ inputs\.request_id \}\}/,
+  );
   assert.match(workflow, /cancel-in-progress: false/);
   assert.doesNotMatch(
     workflow,
-    /group:\s*grok-review-\$\{\{ inputs\.repository_id \}\}-\$\{\{ inputs\.pull_number \}\}/
+    /group:\s*grok-review-\$\{\{ inputs\.repository_id \}\}-\$\{\{ inputs\.pull_number \}\}/,
   );
-  assert.match(workflow, /@xai-official\/grok@0\.2\.112/);
-  assert.equal(
-    workflow.match(/GROK_BIN="\$\{HOME\}\/\.grok\/bin\/grok"/g)?.length,
-    2
+
+  assert.match(workflow, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(workflow, /GROK_ASSET_NAME: grok-0\.2\.112-darwin-arm64/);
+  assert.match(workflow, /GROK_ASSET_SIZE: "129363664"/);
+  assert.match(
+    workflow,
+    /GROK_ASSET_SHA256: 5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4/,
   );
-  assert.match(workflow, /git status --porcelain=v1 --untracked-files=all/);
-  for (const name of [
-    "vars.GROK_REVIEW_APP_ID",
-    "vars.GROK_REVIEW_APP_CLIENT_ID",
-    "vars.GROK_REVIEW_WORKER_URL",
-    "vars.GROK_REVIEW_RUNTIME_COMMIT",
-    "vars.GROK_REVIEW_RUNTIME_BUNDLE_SHA256",
-    "vars.GROK_CLI_VERSION",
-    "vars.RECEIPT_SIGNING_PUBLIC_KEY",
-    "secrets.GROK_REVIEW_APP_PRIVATE_KEY",
-    "secrets.GROK_AUTH_JSON",
-    "secrets.RUNNER_CALLBACK_SECRET",
-    "secrets.RECEIPT_SIGNING_PRIVATE_KEY"
-  ]) {
-    assert.match(workflow, new RegExp(name.replaceAll(".", "\\.")));
-  }
+  assert.match(workflow, /gh release download "\$GITHUB_REF_NAME"/);
+  assert.match(workflow, /--repo "\$GITHUB_REPOSITORY"/);
+  assert.match(workflow, /--pattern "\$GROK_ASSET_NAME"/);
+  assert.match(workflow, /install -d -m 700 "\$RUNNER_TEMP\/grok-runtime"/);
+  assert.match(workflow, /test -f "\$GROK_BIN" && test ! -L "\$GROK_BIN"/);
+  assert.match(
+    workflow,
+    /test "\$\(stat -f %z "\$GROK_BIN"\)" = "\$GROK_ASSET_SIZE"/,
+  );
+  assert.match(
+    workflow,
+    /test "\$\(shasum -a 256 "\$GROK_BIN" \| awk '\{print \$1\}'\)" = "\$GROK_ASSET_SHA256"/,
+  );
+  assert.match(workflow, /chmod 500 "\$GROK_BIN"/);
+  assert.match(workflow, /attestLocalGrok\(\{ expectedVersion: "0\.2\.112"/);
+  assert.match(workflow, /echo "GROK_BIN=\$GROK_BIN" >> "\$GITHUB_ENV"/);
+  assert.match(
+    workflow,
+    /exec node apps\/grok-review-app\/src\/actions\/runner-cli\.mjs/,
+  );
+
+  assert.doesNotMatch(workflow, /npm install/);
+  assert.doesNotMatch(workflow, /npm exec/);
+  assert.doesNotMatch(workflow, /\bnpx\b/);
+  assert.doesNotMatch(workflow, /@xai-official\/grok/);
+  assert.doesNotMatch(workflow, /\$\{HOME\}\/\.grok\/bin\/grok/);
+  assert.doesNotMatch(workflow, /~\/\.grok\/bin\/grok/);
   assert.doesNotMatch(workflow, /upload-artifact/);
   assert.doesNotMatch(workflow, /actions\/checkout@v\d/);
+  assert.doesNotMatch(workflow, /actions\/setup-node@v\d/);
+  assert.doesNotMatch(workflow, /repository:\s*\$\{\{\s*inputs\./);
+
+  for (const name of REQUIRED_WORKFLOW_BINDINGS) {
+    assert.match(workflow, new RegExp(name.replaceAll(".", "\\.")));
+  }
+}
+
+test("static staging and production workflows are dispatch-only seven-input environment-bound runners", () => {
+  const root = repoRoot();
+  const workflowDir = path.join(root, ".github", "workflows");
+  assert.equal(
+    fs.existsSync(path.join(workflowDir, "grok-review-app-worker.yml")),
+    false,
+  );
+  assert.deepEqual(
+    fs
+      .readdirSync(workflowDir)
+      .filter((name) => name.endsWith(".yml"))
+      .sort(),
+    [
+      "grok-review-app-worker-production.yml",
+      "grok-review-app-worker-staging.yml",
+    ],
+  );
+
+  const bodies = [];
+  for (const entry of STATIC_WORKFLOWS) {
+    const workflow = readWorkflow(entry.file);
+    assertStaticWorkflowContract(workflow, entry);
+    bodies.push(normalizeExecutableWorkflow(workflow));
+  }
+
+  assert.equal(bodies[0], bodies[1]);
+});
+
+test("prebuilt Grok asset contract is identical across static workflows", () => {
+  const assetMarkers = [
+    "grok-0.2.112-darwin-arm64",
+    "129363664",
+    "5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4",
+    'gh release download "$GITHUB_REF_NAME"',
+    '--repo "$GITHUB_REPOSITORY"',
+    'install -d -m 700 "$RUNNER_TEMP/grok-runtime"',
+    'test -f "$GROK_BIN" && test ! -L "$GROK_BIN"',
+    'chmod 500 "$GROK_BIN"',
+    'echo "GROK_BIN=$GROK_BIN" >> "$GITHUB_ENV"',
+    'attestLocalGrok({ expectedVersion: "0.2.112"',
+  ];
+
+  for (const entry of STATIC_WORKFLOWS) {
+    const workflow = readWorkflow(entry.file);
+    for (const marker of assetMarkers) {
+      assert.match(
+        workflow,
+        new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      );
+    }
+    assert.doesNotMatch(
+      workflow,
+      /npm install|@xai-official\/grok|\$\{HOME\}\/\.grok\/bin\/grok/,
+    );
+  }
 });
