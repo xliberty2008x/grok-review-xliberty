@@ -716,10 +716,7 @@ HOME="$BUILD_HOME" npm_config_prefix="$BUILD_HOME/npm" \
 GROK_LINK="$BUILD_HOME/.grok/bin/grok"
 test -L "$GROK_LINK"
 GROK_INPUT="$(realpath "$GROK_LINK")"
-case "$GROK_INPUT" in
-  "$BUILD_HOME/.grok/downloads/"*) ;;
-  *) exit 1 ;;
-esac
+test "$GROK_INPUT" = "$BUILD_HOME/.grok/bin/grok-0.2.112"
 "$NODE22" --input-type=module - "$GROK_INPUT" <<'NODE'
 import { lstatSync } from "node:fs";
 const path = process.argv[2];
