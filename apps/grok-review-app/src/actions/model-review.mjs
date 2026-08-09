@@ -25,13 +25,13 @@ import {
   sameExecutableRelease
 } from "../../../../plugins/grok/scripts/lib/executable-identity.mjs";
 import { profileFor } from "../../../../plugins/grok/scripts/lib/profiles.mjs";
+import { serializeReviewPacketForModel } from "./review-packet.mjs";
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const REVIEW_PROMPT_PATH = path.join(APP_ROOT, "prompts", "review.md");
 const REPAIR_PROMPT_PATH = path.join(APP_ROOT, "prompts", "report-repair.md");
 const OUTPUT_SCHEMA_PATH = path.join(APP_ROOT, "schemas", "review-output.schema.json");
 const MAX_AUTH_BYTES = 1024 * 1024;
-const MAX_PACKET_JSON_BYTES = 16 * 1024 * 1024;
 
 function modelError(code) {
   const error = new Error(code);
@@ -91,18 +91,7 @@ export function buildModelPrompt(packet) {
   if (!packet || typeof packet !== "object" || Array.isArray(packet)) {
     throw modelError("invalid_review_packet");
   }
-  let packetJson;
-  try {
-    packetJson = JSON.stringify(packet);
-  } catch {
-    throw modelError("invalid_review_packet");
-  }
-  if (
-    Buffer.byteLength(packetJson, "utf8") < 2
-    || Buffer.byteLength(packetJson, "utf8") > MAX_PACKET_JSON_BYTES
-  ) {
-    throw modelError("review_packet_too_large");
-  }
+  const packetJson = serializeReviewPacketForModel(packet);
   return [
     APP_REVIEW_CONTRACT.reviewPrompt.trimEnd(),
     "",
@@ -116,6 +105,15 @@ export function buildModelPrompt(packet) {
     "<END_UNTRUSTED_REVIEW_PACKET_JSON>",
     ""
   ].join("\n");
+}
+
+/**
+ * Central-runner gate. runIsolatedModelReview repeats the same serialization
+ * through buildModelPrompt as a defense immediately before provider launch.
+ */
+export function preflightModelReviewPacket(packet) {
+  serializeReviewPacketForModel(packet);
+  return true;
 }
 
 function initializeEmptyGitRepository(root) {

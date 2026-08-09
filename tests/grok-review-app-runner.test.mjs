@@ -20,6 +20,11 @@ import {
 } from "../apps/grok-review-app/src/actions/central-runner.mjs";
 import { buildPrReviewPayload } from "../scripts/ci/lib/build-pr-review-payload.mjs";
 import { collectRightSideMap } from "../scripts/ci/lib/diff-right-lines.mjs";
+import { buildModelPrompt } from "../apps/grok-review-app/src/actions/model-review.mjs";
+import {
+  CollectorError,
+  CollectorLimits,
+} from "../apps/grok-review-app/src/actions/collector-errors.mjs";
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
@@ -1038,6 +1043,55 @@ test("model/schema failure completes the known check and sends a signed failed t
     completion.summary.match(/<!-- grok-review-receipt:v1:/g)?.length,
     1,
   );
+});
+
+test("packet JSON accepts 2 MiB exactly and rejects the next byte with sanitized metadata", () => {
+  const overhead = Buffer.byteLength(JSON.stringify({ payload: "" }), "utf8");
+  const exact = { payload: "x".repeat(CollectorLimits.MAX_MODEL_PACKET_JSON_BYTES - overhead) };
+  assert.doesNotThrow(() => buildModelPrompt(exact));
+
+  const over = { payload: "x".repeat(CollectorLimits.MAX_MODEL_PACKET_JSON_BYTES + 1 - overhead) };
+  assert.throws(
+    () => buildModelPrompt(over),
+    (error) => error instanceof CollectorError
+      && error.code === "E_MODEL_INPUT_TOO_LARGE"
+      && JSON.stringify(error.toPublicJSON()) === JSON.stringify({
+        ok: false,
+        code: "E_MODEL_INPUT_TOO_LARGE",
+        details: {
+          kind: "packet_json",
+          byteCount: CollectorLimits.MAX_MODEL_PACKET_JSON_BYTES + 1,
+          limit: CollectorLimits.MAX_MODEL_PACKET_JSON_BYTES,
+        },
+      }),
+  );
+});
+
+test("central packet preflight rejects before the provider dependency can launch", async () => {
+  const harness = makeHarness();
+  const small = packet();
+  harness.deps.collectCanonicalReviewPacket = async () => {
+    harness.events.push("collect");
+    return {
+      ...small,
+      hostilePadding: "x".repeat(CollectorLimits.MAX_MODEL_PACKET_JSON_BYTES),
+    };
+  };
+
+  await assert.rejects(
+    runCentralReview(
+      {
+        inputs: inputs(),
+        config: config(),
+        callback: harness.callback,
+      },
+      harness.deps,
+    ),
+    (error) => error.code === "central_runner_failed"
+      && error.causeCode === "E_MODEL_INPUT_TOO_LARGE",
+  );
+  assert.equal(harness.events.includes("model"), false);
+  assert.ok(harness.events.includes("check:complete:failure"));
 });
 
 test("collection failure completes the check but never fabricates source receipt fields", async () => {

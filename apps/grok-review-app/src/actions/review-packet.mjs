@@ -92,6 +92,42 @@ function bufferToBoundedUtf8(buffer, maxBytes) {
 }
 
 /**
+ * Serialize the exact packet that may cross the model boundary. JSON escaping
+ * is included in the byte limit, so control-heavy repository text cannot
+ * amplify a bounded raw patch into an oversized provider prompt.
+ *
+ * @param {object} packet
+ * @returns {string}
+ */
+export function serializeReviewPacketForModel(packet) {
+  if (!packet || typeof packet !== "object" || Array.isArray(packet)) {
+    failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Model packet is invalid.");
+  }
+  let packetJson;
+  try {
+    packetJson = JSON.stringify(packet);
+  } catch {
+    failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Model packet is not serializable.");
+  }
+  if (typeof packetJson !== "string" || Buffer.byteLength(packetJson, "utf8") < 2) {
+    failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Model packet serialization is invalid.");
+  }
+  const byteCount = Buffer.byteLength(packetJson, "utf8");
+  if (byteCount > CollectorLimits.MAX_MODEL_PACKET_JSON_BYTES) {
+    failCollector(
+      CollectorErrorCode.E_MODEL_INPUT_TOO_LARGE,
+      "Serialized model packet exceeds the hard byte limit.",
+      {
+        kind: "packet_json",
+        byteCount,
+        limit: CollectorLimits.MAX_MODEL_PACKET_JSON_BYTES
+      }
+    );
+  }
+  return packetJson;
+}
+
+/**
  * Build the canonical review packet from already-collected evidence.
  * Does not accept or embed any repository filesystem path.
  *
@@ -108,6 +144,9 @@ function bufferToBoundedUtf8(buffer, maxBytes) {
  *     patch: Buffer,
  *     patchBytes: number,
  *     patchDigest: string,
+ *     modelPatch: Buffer,
+ *     modelPatchBytes: number,
+ *     modelPatchDigest: string,
  *     pathsDigest: string
  *   },
  *   instructions: {
@@ -138,19 +177,40 @@ function buildReviewPacketInternal(input, aggregateFetchTransportBounded) {
   if (recomputedPatchDigest !== diff.patchDigest) {
     failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Patch digest mismatch.");
   }
-
-  const patchUtf8 = bufferToBoundedUtf8(diff.patch, CollectorLimits.MAX_PATCH_BYTES);
-  const patchEvidence = patchUtf8 == null
-    ? Object.freeze({
-      encoding: "base64",
-      content: diff.patch.toString("base64"),
-      untrusted: true
-    })
-    : Object.freeze({
-      encoding: "utf8",
-      content: patchUtf8,
-      untrusted: true
-    });
+  if (!Buffer.isBuffer(diff.modelPatch)) {
+    failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Packet requires a model patch Buffer projection.");
+  }
+  if (diff.modelPatchBytes !== diff.modelPatch.length) {
+    failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Model patch byte count does not match buffer length.");
+  }
+  if (diff.modelPatch.length > CollectorLimits.MAX_MODEL_PATCH_BYTES) {
+    failCollector(
+      CollectorErrorCode.E_MODEL_INPUT_TOO_LARGE,
+      "Model patch exceeds the hard byte limit.",
+      {
+        kind: "model_patch",
+        byteCount: diff.modelPatch.length,
+        limit: CollectorLimits.MAX_MODEL_PATCH_BYTES
+      }
+    );
+  }
+  const recomputedModelPatchDigest = crypto
+    .createHash("sha256")
+    .update(diff.modelPatch)
+    .digest("hex");
+  if (recomputedModelPatchDigest !== diff.modelPatchDigest) {
+    failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Model patch digest mismatch.");
+  }
+  const modelPatchUtf8 = bufferToBoundedUtf8(
+    diff.modelPatch,
+    CollectorLimits.MAX_MODEL_PATCH_BYTES
+  );
+  if (modelPatchUtf8 == null) {
+    failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Model patch is not valid UTF-8.");
+  }
+  if (/(?:^|\n)GIT binary patch(?:\n|$)/.test(modelPatchUtf8)) {
+    failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Model patch contains a binary patch body.");
+  }
 
   const instructionFiles = (instructions?.files || []).map((file) => {
     const text = bufferToBoundedUtf8(file.content, CollectorLimits.MAX_INSTRUCTION_FILE_BYTES);
@@ -175,14 +235,32 @@ function buildReviewPacketInternal(input, aggregateFetchTransportBounded) {
     });
   });
 
-  const changedFiles = Object.freeze((diff.changedFiles || []).map((f) => Object.freeze({
-    path: f.path,
-    oldMode: f.oldMode,
-    newMode: f.newMode,
-    oldOid: f.oldOid,
-    newOid: f.newOid,
-    status: f.status
-  })));
+  const changedFiles = Object.freeze((diff.changedFiles || []).map((f) => {
+    const oldHasBlob = f.oldMode !== "000000" && f.oldMode !== "160000";
+    const newHasBlob = f.newMode !== "000000" && f.newMode !== "160000";
+    if (
+      typeof f.binary !== "boolean"
+      || (oldHasBlob
+        ? !Number.isSafeInteger(f.oldBytes) || f.oldBytes < 0
+        : f.oldBytes !== null)
+      || (newHasBlob
+        ? !Number.isSafeInteger(f.newBytes) || f.newBytes < 0
+        : f.newBytes !== null)
+    ) {
+      failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Changed-file model metadata is invalid.");
+    }
+    return Object.freeze({
+      path: f.path,
+      oldMode: f.oldMode,
+      newMode: f.newMode,
+      oldOid: f.oldOid,
+      newOid: f.newOid,
+      status: f.status,
+      binary: f.binary,
+      oldBytes: f.oldBytes,
+      newBytes: f.newBytes
+    });
+  }));
 
   const applicability = Object.freeze((instructions?.applicability || []).map((a) => Object.freeze({
     changedPath: a.changedPath,
@@ -215,6 +293,7 @@ function buildReviewPacketInternal(input, aggregateFetchTransportBounded) {
 
   const digests = Object.freeze({
     patchDigest: diff.patchDigest,
+    modelPatchDigest: diff.modelPatchDigest,
     pathsDigest: diff.pathsDigest,
     instructionsDigest: crypto
       .createHash("sha256")
@@ -261,6 +340,8 @@ function buildReviewPacketInternal(input, aggregateFetchTransportBounded) {
     limits: Object.freeze({
       maxChangedFiles: CollectorLimits.MAX_CHANGED_FILES,
       maxPatchBytes: CollectorLimits.MAX_PATCH_BYTES,
+      maxModelPatchBytes: CollectorLimits.MAX_MODEL_PATCH_BYTES,
+      maxModelPacketJsonBytes: CollectorLimits.MAX_MODEL_PACKET_JSON_BYTES,
       maxInstructionFiles: CollectorLimits.MAX_INSTRUCTION_FILES,
       maxInstructionFileBytes: CollectorLimits.MAX_INSTRUCTION_FILE_BYTES,
       maxInstructionTotalBytes: CollectorLimits.MAX_INSTRUCTION_TOTAL_BYTES,
@@ -272,9 +353,11 @@ function buildReviewPacketInternal(input, aggregateFetchTransportBounded) {
     applicability,
     // Untrusted evidence for the model:
     patch: Object.freeze({
-      bytes: diff.patchBytes,
-      digest: diff.patchDigest,
-      ...patchEvidence
+      bytes: diff.modelPatchBytes,
+      digest: diff.modelPatchDigest,
+      encoding: "utf8",
+      content: modelPatchUtf8,
+      untrusted: true
     }),
     instructions: Object.freeze({
       files: Object.freeze(instructionFiles),
@@ -292,7 +375,10 @@ function buildReviewPacketInternal(input, aggregateFetchTransportBounded) {
         newMode: f.newMode,
         oldOid: f.oldOid,
         newOid: f.newOid,
-        status: f.status
+        status: f.status,
+        binary: f.binary,
+        oldBytes: f.oldBytes,
+        newBytes: f.newBytes
       }))),
       instructions: Object.freeze({
         files: instructionReceiptFiles,
@@ -301,7 +387,9 @@ function buildReviewPacketInternal(input, aggregateFetchTransportBounded) {
         fileCount: instructionFiles.length
       }),
       patchBytes: diff.patchBytes,
-      patchDigest: diff.patchDigest
+      patchDigest: diff.patchDigest,
+      modelPatchBytes: diff.modelPatchBytes,
+      modelPatchDigest: diff.modelPatchDigest
     })
   });
 
@@ -311,6 +399,7 @@ function buildReviewPacketInternal(input, aggregateFetchTransportBounded) {
     failCollector(CollectorErrorCode.E_COLLECTOR_SEAL, "Packet must not expose bare repository path.");
   }
   assertPacketStructureHasNoPrivateHandles(packet);
+  serializeReviewPacketForModel(packet);
 
   return packet;
 }

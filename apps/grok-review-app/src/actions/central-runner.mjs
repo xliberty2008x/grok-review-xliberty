@@ -45,6 +45,7 @@ import {
   APP_REVIEW_CONTRACT,
   attestLocalGrok,
   computeRuntimeBundleDigest,
+  preflightModelReviewPacket,
   runIsolatedModelReview
 } from "./model-review.mjs";
 
@@ -536,6 +537,7 @@ const DEFAULT_DEPENDENCIES = Object.freeze({
   createOrReconcileCheckRun,
   completeCheckRun,
   collectCanonicalReviewPacket,
+  preflightModelReviewPacket,
   runIsolatedModelReview,
   collectRightSideMap,
   buildPrReviewPayload,
@@ -564,6 +566,7 @@ function resolvedDependencies(overrides) {
     "createOrReconcileCheckRun",
     "completeCheckRun",
     "collectCanonicalReviewPacket",
+    "preflightModelReviewPacket",
     "runIsolatedModelReview",
     "collectRightSideMap",
     "buildPrReviewPayload",
@@ -1200,6 +1203,10 @@ export async function runCentralReview(input, overrides = {}) {
     ) {
       throw runnerError("collector_identity_mismatch");
     }
+
+    // Fail before crossing the provider dependency boundary. The model layer
+    // repeats this exact serialized-size check immediately before launch.
+    deps.preflightModelReviewPacket(state.packet);
 
     deps.assertCredentialBoundary(
       state.config.runtimeRoot,
