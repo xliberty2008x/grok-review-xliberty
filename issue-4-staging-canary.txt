@@ -1,0 +1,1 @@
+Issue #4 staging canary. This reviewable text must remain visible beside bounded binary metadata.
