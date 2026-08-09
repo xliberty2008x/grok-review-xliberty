@@ -1233,11 +1233,15 @@ const STATIC_WORKFLOWS = Object.freeze([
     file: "grok-review-app-worker-staging.yml",
     environment: "review-staging-runtime",
     oppositeEnvironment: "review-production-runtime",
+    concurrencyEnv: "staging",
+    oppositeConcurrencyEnv: "production",
   },
   {
     file: "grok-review-app-worker-production.yml",
     environment: "review-production-runtime",
     oppositeEnvironment: "review-staging-runtime",
+    concurrencyEnv: "production",
+    oppositeConcurrencyEnv: "staging",
   },
 ]);
 
@@ -1258,12 +1262,21 @@ function normalizeExecutableWorkflow(workflow) {
     .replace(
       /^ {4}environment: review-(?:staging|production)-runtime\n/m,
       "    environment: NORMALIZED_ENVIRONMENT\n",
+    )
+    .replace(
+      /^ {2}group: grok-review-request-(?:staging|production)-\$\{\{ inputs\.request_id \}\}\n/m,
+      "  group: NORMALIZED_CONCURRENCY_GROUP\n",
     );
 }
 
 function assertStaticWorkflowContract(
   workflow,
-  { environment, oppositeEnvironment },
+  {
+    environment,
+    oppositeEnvironment,
+    concurrencyEnv,
+    oppositeConcurrencyEnv,
+  },
 ) {
   assert.match(workflow, /workflow_dispatch:/);
   assert.doesNotMatch(workflow, /pull_request:/);
@@ -1300,7 +1313,22 @@ function assertStaticWorkflowContract(
     /actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/,
   );
   assert.match(workflow, /persist-credentials: false/);
+  // Repository-scoped concurrency must be environment-namespaced so dual
+  // cutover D1 sequences with the same request_id cannot contend.
   assert.match(
+    workflow,
+    new RegExp(
+      `^ {2}group: grok-review-request-${concurrencyEnv}-\\$\\{\\{ inputs\\.request_id \\}\\}$`,
+      "m",
+    ),
+  );
+  assert.doesNotMatch(
+    workflow,
+    new RegExp(
+      `group: grok-review-request-${oppositeConcurrencyEnv}-\\$\\{\\{ inputs\\.request_id \\}\\}`,
+    ),
+  );
+  assert.doesNotMatch(
     workflow,
     /group: grok-review-request-\$\{\{ inputs\.request_id \}\}/,
   );

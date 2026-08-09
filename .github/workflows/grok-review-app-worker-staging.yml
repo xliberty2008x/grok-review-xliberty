@@ -39,7 +39,7 @@ concurrency:
   # Never let an unverified manual/check dispatch cancel another request.
   # Cross-request supersession is authorized and fenced by D1; this group only
   # coalesces ambiguous duplicate dispatches for the same immutable request.
-  group: grok-review-request-${{ inputs.request_id }}
+  group: grok-review-request-staging-${{ inputs.request_id }}
   cancel-in-progress: false
 
 jobs:
