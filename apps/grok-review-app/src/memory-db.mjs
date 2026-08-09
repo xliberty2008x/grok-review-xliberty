@@ -30,6 +30,26 @@ function isAuthorized(db, row) {
   );
 }
 
+function defaultControlState() {
+  return {
+    state_key: "dispatch_gate",
+    paused: 0,
+    epoch: 1,
+    updated_at: "1970-01-01T00:00:00.000Z"
+  };
+}
+
+function controlEpochAllows(db, key, epoch) {
+  const control = db.controlState;
+  return Boolean(
+    control
+    && control.state_key === "dispatch_gate"
+    && key === "dispatch_gate"
+    && Number(control.paused) === 0
+    && Number(control.epoch) === Number(epoch)
+  );
+}
+
 function insertOutboxRow(db, row) {
   if (db.outboxByKey.has(row.job_key)) {
     return { success: true, meta: { changes: 0 } };
@@ -195,12 +215,45 @@ class MemoryStatement {
       const row = this.db.outboxById.get(String(p[0]));
       return row ? [clone(row)] : [];
     }
+    if (sql.includes("FROM control_state WHERE state_key = ?")) {
+      if (this.db.controlState && this.db.controlState.state_key === p[0]) {
+        return [clone(this.db.controlState)];
+      }
+      return [];
+    }
+    if (
+      sql.includes("FROM outbox_jobs o")
+      && sql.includes("JOIN control_state c")
+    ) {
+      const job = this.db.outboxById.get(String(p[1]));
+      const control = this.db.controlState;
+      if (
+        job
+        && job.status === p[2]
+        && job.lease_owner === p[3]
+        && control
+        && control.state_key === p[0]
+        && Number(control.paused) === 0
+        && Number(control.epoch) === Number(p[4])
+      ) {
+        return [{ ok: 1 }];
+      }
+      return [];
+    }
     if (
       sql.includes("FROM outbox_jobs")
       && sql.includes("ORDER BY job_id ASC")
       && sql.includes("LIMIT ?")
     ) {
-      const [pending, pendingAt, leased, leaseAt, limit] = p;
+      const hasGate = sql.includes("FROM control_state c");
+      const pending = p[0];
+      const pendingAt = p[1];
+      const leased = p[2];
+      const leaseAt = p[3];
+      const limit = hasGate ? p[6] : p[4];
+      if (hasGate && !controlEpochAllows(this.db, p[4], p[5])) {
+        return [];
+      }
       return [...this.db.outboxById.values()]
         .filter(
           (row) =>
@@ -403,7 +456,15 @@ class MemoryStatement {
       sql.startsWith("INSERT OR IGNORE INTO outbox_jobs")
       && sql.includes("SELECT 'dispatch:' || r.request_key")
     ) {
-      const allowed = new Set(p.slice(5));
+      const hasGate = sql.includes("FROM control_state c");
+      const statusParams = hasGate ? p.slice(5, -2) : p.slice(5);
+      const allowed = new Set(statusParams);
+      if (
+        hasGate
+        && !controlEpochAllows(this.db, p[p.length - 2], p[p.length - 1])
+      ) {
+        return { success: true, meta: { changes: 0 } };
+      }
       let changes = 0;
       for (const row of this.db.requestsById.values()) {
         if (
@@ -432,7 +493,15 @@ class MemoryStatement {
       sql.startsWith("INSERT OR IGNORE INTO outbox_jobs")
       && sql.includes("SELECT 'cancel:' || r.workflow_run_id")
     ) {
-      const allowed = new Set(p.slice(5));
+      const hasGate = sql.includes("FROM control_state c");
+      const statusParams = hasGate ? p.slice(5, -2) : p.slice(5);
+      const allowed = new Set(statusParams);
+      if (
+        hasGate
+        && !controlEpochAllows(this.db, p[p.length - 2], p[p.length - 1])
+      ) {
+        return { success: true, meta: { changes: 0 } };
+      }
       let changes = 0;
       for (const row of this.db.requestsById.values()) {
         if (
@@ -463,9 +532,14 @@ class MemoryStatement {
       && sql.includes("WHERE status = ?")
       && !sql.includes("status IN")
     ) {
+      const hasGate = sql.includes("FROM control_state c");
+      const statusParam = hasGate ? p[5] : p[5];
+      if (hasGate && !controlEpochAllows(this.db, p[6], p[7])) {
+        return { success: true, meta: { changes: 0 } };
+      }
       let changes = 0;
       for (const row of this.db.requestsById.values()) {
-        if (row.status === p[5] && row.workflow_run_id != null) {
+        if (row.status === statusParam && row.workflow_run_id != null) {
           changes += insertOutboxRow(this.db, {
             job_key: `cancel:${row.workflow_run_id}`,
             job_type: p[0],
@@ -591,7 +665,15 @@ class MemoryStatement {
       && sql.includes("NOT EXISTS")
       && sql.includes("FROM installations i")
     ) {
-      const allowed = new Set(p.slice(2));
+      const hasGate = sql.includes("FROM control_state c");
+      const statusParams = hasGate ? p.slice(2, -2) : p.slice(2);
+      const allowed = new Set(statusParams);
+      if (
+        hasGate
+        && !controlEpochAllows(this.db, p[p.length - 2], p[p.length - 1])
+      ) {
+        return { success: true, meta: { changes: 0 } };
+      }
       let changes = 0;
       for (const row of this.db.requestsById.values()) {
         if (allowed.has(row.status) && !isAuthorized(this.db, row)) {
@@ -769,6 +851,10 @@ class MemoryStatement {
       && sql.includes("SET status = ?, lease_owner = ?")
       && sql.includes("lease_expires_at <= ?")
     ) {
+      const hasGate = sql.includes("FROM control_state c");
+      if (hasGate && !controlEpochAllows(this.db, p[9], p[10])) {
+        return { success: true, meta: { changes: 0 } };
+      }
       const row = this.db.outboxById.get(String(p[4]));
       let changes = 0;
       if (
@@ -1024,6 +1110,7 @@ export class MemoryD1 {
     this.nonces = new Map();
     this.outboxById = new Map();
     this.outboxByKey = new Map();
+    this.controlState = defaultControlState();
     this.nextRequestId = 1;
     this.nextOutboxId = 1;
     this.failBatchIndex = null;
@@ -1044,6 +1131,7 @@ export class MemoryD1 {
       nonces: cloneMap(this.nonces),
       outboxById: cloneMap(this.outboxById),
       outboxByKey: null,
+      controlState: clone(this.controlState),
       nextRequestId: this.nextRequestId,
       nextOutboxId: this.nextOutboxId
     };
@@ -1079,6 +1167,7 @@ export class MemoryD1 {
       this.nonces = snapshot.nonces;
       this.outboxById = snapshot.outboxById;
       this.outboxByKey = snapshot.outboxByKey;
+      this.controlState = snapshot.controlState;
       this.nextRequestId = snapshot.nextRequestId;
       this.nextOutboxId = snapshot.nextOutboxId;
       throw error;

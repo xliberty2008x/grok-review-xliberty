@@ -5,6 +5,7 @@
  */
 
 import {
+  CONTROL_STATE_KEY,
   OUTBOX_JOB_STATUS,
   OUTBOX_JOB_TYPE,
   REQUEST_STATUS,
@@ -12,6 +13,111 @@ import {
   SUPERSEDABLE_STATUSES,
   TERMINAL_STATUSES
 } from "./constants.mjs";
+
+/**
+ * Fail-closed singleton gate read. Never throws into the caller.
+ * @param {import("@cloudflare/workers-types").D1Database} d1
+ * @returns {Promise<{paused:boolean, epoch:number}>}
+ */
+export async function getControlState(d1) {
+  try {
+    if (!d1 || typeof d1.prepare !== "function") {
+      return { paused: true, epoch: 0 };
+    }
+    const row = await d1
+      .prepare(`SELECT paused, epoch FROM control_state WHERE state_key = ?`)
+      .bind(CONTROL_STATE_KEY)
+      .first();
+    if (!row) return { paused: true, epoch: 0 };
+    const paused = row.paused;
+    const epoch = row.epoch;
+    if (
+      typeof paused !== "number"
+      || !Number.isInteger(paused)
+      || (paused !== 0 && paused !== 1)
+    ) {
+      return { paused: true, epoch: 0 };
+    }
+    if (
+      typeof epoch !== "number"
+      || !Number.isSafeInteger(epoch)
+      || epoch < 1
+    ) {
+      return { paused: true, epoch: 0 };
+    }
+    return { paused: paused === 1, epoch };
+  } catch {
+    return { paused: true, epoch: 0 };
+  }
+}
+
+/**
+ * True only when the job is still leased by the exact owner and the singleton
+ * gate is unpaused at the exact observed epoch.
+ * @param {import("@cloudflare/workers-types").D1Database} d1
+ * @param {{ jobId: string|number, leaseOwner: string, epoch: number }} input
+ * @returns {Promise<boolean>}
+ */
+export async function mayExecuteLeasedOutboxJob(d1, input) {
+  try {
+    if (!d1 || typeof d1.prepare !== "function") return false;
+    const jobId = input?.jobId;
+    const leaseOwner = input?.leaseOwner;
+    const epoch = input?.epoch;
+    if (
+      jobId == null
+      || jobId === ""
+      || typeof leaseOwner !== "string"
+      || leaseOwner.length === 0
+      || !Number.isSafeInteger(epoch)
+      || epoch < 1
+    ) {
+      return false;
+    }
+    const row = await d1
+      .prepare(
+        `SELECT 1 AS ok
+         FROM outbox_jobs o
+         JOIN control_state c ON c.state_key = ?
+         WHERE o.job_id = ?
+           AND o.status = ?
+           AND o.lease_owner = ?
+           AND c.paused = 0
+           AND c.epoch = ?`
+      )
+      .bind(
+        CONTROL_STATE_KEY,
+        String(jobId),
+        OUTBOX_JOB_STATUS.LEASED,
+        leaseOwner,
+        epoch
+      )
+      .first();
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
+function isUsableCutoverEpoch(epoch) {
+  return typeof epoch === "number" && Number.isSafeInteger(epoch) && epoch >= 1;
+}
+
+/**
+ * Resolve the epoch fence for repair. When omitted, reads the live unpaused
+ * gate; invalid/missing/paused state yields null (zero mutations).
+ * @param {import("@cloudflare/workers-types").D1Database} d1
+ * @param {number} [expectedEpoch]
+ * @returns {Promise<number|null>}
+ */
+async function resolveRepairEpoch(d1, expectedEpoch) {
+  if (expectedEpoch !== undefined) {
+    return isUsableCutoverEpoch(expectedEpoch) ? expectedEpoch : null;
+  }
+  const state = await getControlState(d1);
+  if (state.paused || !isUsableCutoverEpoch(state.epoch)) return null;
+  return state.epoch;
+}
 
 const REQUEST_SELECT = `SELECT request_id, request_key, receipt_id,
         installation_id, repository_id, pull_number,
@@ -888,10 +994,23 @@ export async function casAbortRequest(d1, requestId, data) {
 /**
  * Restore missing durable work. Also supersedes requests whose installation or
  * selected-repository authorization disappeared between lifecycle events.
+ * Every mutation is SQL-fenced by the unpaused cutover singleton epoch.
+ * @param {import("@cloudflare/workers-types").D1Database} d1
+ * @param {string} updatedAt
+ * @param {number} [expectedEpoch]
  */
-export async function repairOutboxJobs(d1, updatedAt) {
+export async function repairOutboxJobs(d1, updatedAt, expectedEpoch) {
+  const epoch = await resolveRepairEpoch(d1, expectedEpoch);
+  if (epoch == null) return 0;
+
   const supersedable = SUPERSEDABLE_STATUSES.map(() => "?").join(", ");
   const retryable = RETRYABLE_DISPATCH_STATUSES.map(() => "?").join(", ");
+  const gateExists = `EXISTS (
+           SELECT 1 FROM control_state c
+           WHERE c.state_key = ?
+             AND c.paused = 0
+             AND c.epoch = ?
+         )`;
 
   const cancelUnauthorized = d1
     .prepare(
@@ -917,7 +1036,8 @@ export async function repairOutboxJobs(d1, updatedAt) {
              i.repository_selection <> 'all'
              AND ir.repository_id IS NULL
            )
-         )`
+         )
+         AND ${gateExists}`
     )
     .bind(
       OUTBOX_JOB_TYPE.CANCEL,
@@ -925,7 +1045,9 @@ export async function repairOutboxJobs(d1, updatedAt) {
       updatedAt,
       updatedAt,
       updatedAt,
-      ...SUPERSEDABLE_STATUSES
+      ...SUPERSEDABLE_STATUSES,
+      CONTROL_STATE_KEY,
+      epoch
     );
 
   const supersedeUnauthorized = d1
@@ -945,12 +1067,15 @@ export async function repairOutboxJobs(d1, updatedAt) {
                i.repository_selection = 'all'
                OR ir.repository_id IS NOT NULL
              )
-         )`
+         )
+         AND ${gateExists}`
     )
     .bind(
       REQUEST_STATUS.SUPERSEDED,
       updatedAt,
-      ...SUPERSEDABLE_STATUSES
+      ...SUPERSEDABLE_STATUSES,
+      CONTROL_STATE_KEY,
+      epoch
     );
 
   const dispatchMissing = d1
@@ -973,7 +1098,8 @@ export async function repairOutboxJobs(d1, updatedAt) {
          AND (
            i.repository_selection = 'all'
            OR ir.repository_id IS NOT NULL
-         )`
+         )
+         AND ${gateExists}`
     )
     .bind(
       OUTBOX_JOB_TYPE.DISPATCH,
@@ -981,7 +1107,9 @@ export async function repairOutboxJobs(d1, updatedAt) {
       updatedAt,
       updatedAt,
       updatedAt,
-      ...RETRYABLE_DISPATCH_STATUSES
+      ...RETRYABLE_DISPATCH_STATUSES,
+      CONTROL_STATE_KEY,
+      epoch
     );
 
   const cancelSuperseded = d1
@@ -994,7 +1122,8 @@ export async function repairOutboxJobs(d1, updatedAt) {
        SELECT 'cancel:' || workflow_run_id, ?, CAST(request_id AS TEXT),
               workflow_run_id, ?, 0, ?, NULL, NULL, NULL, ?, ?
        FROM review_requests
-       WHERE status = ? AND workflow_run_id IS NOT NULL`
+       WHERE status = ? AND workflow_run_id IS NOT NULL
+         AND ${gateExists}`
     )
     .bind(
       OUTBOX_JOB_TYPE.CANCEL,
@@ -1002,7 +1131,9 @@ export async function repairOutboxJobs(d1, updatedAt) {
       updatedAt,
       updatedAt,
       updatedAt,
-      REQUEST_STATUS.SUPERSEDED
+      REQUEST_STATUS.SUPERSEDED,
+      CONTROL_STATE_KEY,
+      epoch
     );
 
   const results = await d1.batch([
@@ -1094,6 +1225,10 @@ export async function casWatchdogTerminal(d1, requestId, data) {
 }
 
 export async function leaseOutboxJobs(d1, input) {
+  if (!isUsableCutoverEpoch(input?.epoch)) {
+    return [];
+  }
+  const epoch = input.epoch;
   const candidates = await d1
     .prepare(
       `${OUTBOX_SELECT}
@@ -1102,6 +1237,12 @@ export async function leaseOutboxJobs(d1, input) {
          OR
          (status = ? AND lease_expires_at <= ?)
        )
+         AND EXISTS (
+           SELECT 1 FROM control_state c
+           WHERE c.state_key = ?
+             AND c.paused = 0
+             AND c.epoch = ?
+         )
        ORDER BY job_id ASC
        LIMIT ?`
     )
@@ -1110,6 +1251,8 @@ export async function leaseOutboxJobs(d1, input) {
       input.now,
       OUTBOX_JOB_STATUS.LEASED,
       input.now,
+      CONTROL_STATE_KEY,
+      epoch,
       input.limit
     )
     .all();
@@ -1124,6 +1267,12 @@ export async function leaseOutboxJobs(d1, input) {
              (status = ? AND available_at <= ?)
              OR
              (status = ? AND lease_expires_at <= ?)
+           )
+           AND EXISTS (
+             SELECT 1 FROM control_state c
+             WHERE c.state_key = ?
+               AND c.paused = 0
+               AND c.epoch = ?
            )`
       )
       .bind(
@@ -1135,7 +1284,9 @@ export async function leaseOutboxJobs(d1, input) {
         OUTBOX_JOB_STATUS.PENDING,
         input.now,
         OUTBOX_JOB_STATUS.LEASED,
-        input.now
+        input.now,
+        CONTROL_STATE_KEY,
+        epoch
       )
       .run();
     if ((result?.meta?.changes ?? 0) > 0) {

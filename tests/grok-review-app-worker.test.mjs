@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, webcrypto } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -23,6 +24,7 @@ import worker, {
   MAX_WEBHOOK_BYTES,
   POLICY_VERSION,
   REQUEST_STATUS,
+  SAFE_OUTBOX_ERRORS,
   TRIGGER_KIND,
   WEBHOOK_PATH,
   addInstallationRepository,
@@ -33,6 +35,7 @@ import worker, {
   createMemoryDb,
   dispatchWorkflow,
   encodeExternalId,
+  getControlState,
   getDelivery,
   getOutboxJobByKey,
   listOutboxJobs,
@@ -45,6 +48,7 @@ import worker, {
   isCanonicalDecimalId,
   isInstallationRepoAuthorized,
   isValidSharedSecret,
+  mayExecuteLeasedOutboxJob,
   parseCallbackPayload,
   parseExternalId,
   parseJsonPreservingIntegerIds,
@@ -52,6 +56,9 @@ import worker, {
   processWorkflowWatchdog,
   computeOutboxBackoffMs,
   leaseOutboxJobs,
+  repairOutboxJobs,
+  rescheduleOutboxJob,
+  runScheduledMaintenance,
   supersedePrRequestsWithOutbox,
   receiptKeyId,
   signCallbackMessage,
@@ -68,11 +75,18 @@ if (!globalThis.crypto) globalThis.crypto = webcrypto;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const APP_ROOT = path.join(ROOT, "apps", "grok-review-app");
 const MIGRATION_PATH = path.join(APP_ROOT, "migrations", "0001_init.sql");
+const MIGRATION_0002_PATH = path.join(
+  APP_ROOT,
+  "migrations",
+  "0002_control_state.sql"
+);
 const WRANGLER_PATH = path.join(APP_ROOT, "wrangler.toml");
 const README_PATH = path.join(APP_ROOT, "README.md");
 
 const WEBHOOK_SECRET = "test-webhook-secret-value-at-least-32-bytes";
 const CALLBACK_SECRET = "test-callback-secret-value-at-least-32-bytes";
+const CALLBACK_SECRET_NEXT = "test-callback-secret-next-value-at-least-32b";
+const RUNTIME_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
 /** ID strictly above Number.MAX_SAFE_INTEGER (2^53). */
 const HUGE_ID = "9007199254740993";
@@ -102,6 +116,7 @@ function makeEnv(overrides = {}) {
     DB: createMemoryDb(),
     WEBHOOK_SECRET,
     RUNNER_CALLBACK_SECRET: CALLBACK_SECRET,
+    RUNTIME_COMMIT,
     RECEIPT_PUBLIC_KEYS_JSON: JSON.stringify({
       [RECEIPT_KEY_ID]: RECEIPT_PUBLIC_KEY_PEM
     }),
@@ -112,6 +127,15 @@ function makeEnv(overrides = {}) {
     CONTROL_REPO_TOKEN: "ghs_test_control_token",
     GITHUB_APP_ID: "12345",
     ...overrides
+  };
+}
+
+function setControlGate(db, { paused = 0, epoch = 1 } = {}) {
+  db.controlState = {
+    state_key: "dispatch_gate",
+    paused,
+    epoch,
+    updated_at: new Date().toISOString()
   };
 }
 
@@ -399,7 +423,7 @@ async function createStartedReview(env, options = {}) {
   const created = await invoke(
     env,
     await webhookRequest({
-      body: basePrPayload(),
+      body: options.payload ?? basePrPayload(),
       event: "pull_request",
       deliveryId: options.deliveryId ?? `d-started-${Math.random()}`
     }),
@@ -1700,13 +1724,15 @@ test("outbox leases have one winner and recover after expiry", async () => {
       now,
       leaseOwner: "lease-a",
       leaseExpiresAt: expires,
-      limit: 1
+      limit: 1,
+      epoch: 1
     }),
     leaseOutboxJobs(env.DB, {
       now,
       leaseOwner: "lease-b",
       leaseExpiresAt: expires,
-      limit: 1
+      limit: 1,
+      epoch: 1
     })
   ]);
   assert.equal(a.length + b.length, 1);
@@ -1714,13 +1740,15 @@ test("outbox leases have one winner and recover after expiry", async () => {
     now: new Date(nowMs + OUTBOX_LEASE_MS - 1).toISOString(),
     leaseOwner: "lease-early",
     leaseExpiresAt: new Date(nowMs + (2 * OUTBOX_LEASE_MS)).toISOString(),
-    limit: 1
+    limit: 1,
+    epoch: 1
   })).length, 0);
   assert.equal((await leaseOutboxJobs(env.DB, {
     now: new Date(nowMs + OUTBOX_LEASE_MS + 1).toISOString(),
     leaseOwner: "lease-recovery",
     leaseExpiresAt: new Date(nowMs + (2 * OUTBOX_LEASE_MS)).toISOString(),
-    limit: 1
+    limit: 1,
+    epoch: 1
   })).length, 1);
 });
 
@@ -2681,5 +2709,861 @@ test("healthz and unknown routes", async () => {
   const env = makeEnv();
   const health = await invoke(env, new Request("https://worker.example/healthz"));
   assert.equal(health.status, 200);
+  assert.deepEqual(await health.json(), {
+    ok: true,
+    service: "grok-review-app",
+    runtime_commit: RUNTIME_COMMIT,
+    dispatch_paused: false,
+    cutover_epoch: 1
+  });
   assert.equal((await invoke(env, new Request("https://worker.example/nope"))).status, 404);
+});
+
+// ---------------------------------------------------------------------------
+// Task 3: durable pause epoch, cutover fences, callback key overlap, health gate
+// ---------------------------------------------------------------------------
+
+test("additive control migration preserves schema and seeds one gate row", () => {
+  const migration0001 = fs.readFileSync(MIGRATION_PATH, "utf8");
+  const migration0002 = fs.readFileSync(MIGRATION_0002_PATH, "utf8");
+  assert.equal(
+    migration0002.trim(),
+    `CREATE TABLE IF NOT EXISTS control_state (
+  state_key TEXT PRIMARY KEY NOT NULL CHECK (state_key = 'dispatch_gate'),
+  paused INTEGER NOT NULL CHECK (paused IN (0, 1)),
+  epoch INTEGER NOT NULL CHECK (epoch >= 1),
+  updated_at TEXT NOT NULL
+);
+
+INSERT OR IGNORE INTO control_state (state_key, paused, epoch, updated_at)
+VALUES ('dispatch_gate', 0, 1, '1970-01-01T00:00:00.000Z');`
+  );
+  assert.doesNotMatch(migration0002, /\bDROP\b/i);
+  assert.doesNotMatch(migration0002, /\bDELETE\b/i);
+  assert.doesNotMatch(migration0002, /\b(?:ALTER|UPDATE|TRIGGER)\b/i);
+  assert.match(migration0002, /CREATE TABLE IF NOT EXISTS control_state/);
+  assert.match(migration0002, /INSERT OR IGNORE INTO control_state/);
+
+  const db = new DatabaseSync(":memory:");
+  db.exec("PRAGMA foreign_keys = ON;");
+  db.exec(migration0001);
+  const now = "2026-08-09T00:00:00.000Z";
+  db.prepare(
+    `INSERT INTO installations (
+       installation_id, account_id, account_type, repository_selection,
+       suspended, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run("100", "9", "Organization", "selected", 0, now, now);
+  db.prepare(
+    `INSERT INTO installation_repositories (installation_id, repository_id)
+     VALUES (?, ?)`
+  ).run("100", "500");
+  db.prepare(
+    `INSERT INTO webhook_deliveries
+       (delivery_id, event_name, payload_digest, received_at, status)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run("d-seed", "pull_request", "a".repeat(64), now, "admitted");
+
+  const preSchema = db
+    .prepare(
+      `SELECT type, name, tbl_name, sql FROM sqlite_schema
+       WHERE name NOT LIKE 'sqlite_%'
+       ORDER BY type, name`
+    )
+    .all();
+  const preInstall = db
+    .prepare(`SELECT * FROM installations ORDER BY rowid`)
+    .all();
+  const preRepos = db
+    .prepare(`SELECT * FROM installation_repositories ORDER BY rowid`)
+    .all();
+  const preDeliveries = db
+    .prepare(`SELECT * FROM webhook_deliveries ORDER BY rowid`)
+    .all();
+
+  db.exec(migration0002);
+  db.exec(migration0002);
+
+  const postSchema = db
+    .prepare(
+      `SELECT type, name, tbl_name, sql FROM sqlite_schema
+       WHERE name NOT LIKE 'sqlite_%'
+       ORDER BY type, name`
+    )
+    .all();
+  const gateRows = db
+    .prepare(`SELECT * FROM control_state ORDER BY rowid`)
+    .all();
+  assert.equal(gateRows.length, 1);
+  assert.equal(gateRows[0].state_key, "dispatch_gate");
+  assert.equal(gateRows[0].paused, 0);
+  assert.equal(gateRows[0].epoch, 1);
+  assert.deepEqual(
+    postSchema.filter(
+      (row) => row.name !== "control_state" && row.tbl_name !== "control_state"
+    ),
+    preSchema
+  );
+  assert.deepEqual(
+    db.prepare(`SELECT * FROM installations ORDER BY rowid`).all(),
+    preInstall
+  );
+  assert.deepEqual(
+    db.prepare(`SELECT * FROM installation_repositories ORDER BY rowid`).all(),
+    preRepos
+  );
+  assert.deepEqual(
+    db.prepare(`SELECT * FROM webhook_deliveries ORDER BY rowid`).all(),
+    preDeliveries
+  );
+  db.close();
+});
+
+test("control state reads fail closed for missing, malformed, and query errors", async () => {
+  const env = makeEnv();
+  assert.deepEqual(await getControlState(env.DB), { paused: false, epoch: 1 });
+
+  env.DB.controlState = null;
+  assert.deepEqual(await getControlState(env.DB), { paused: true, epoch: 0 });
+
+  setControlGate(env.DB, { paused: 2, epoch: 1 });
+  assert.deepEqual(await getControlState(env.DB), { paused: true, epoch: 0 });
+
+  setControlGate(env.DB, { paused: 0, epoch: 0 });
+  assert.deepEqual(await getControlState(env.DB), { paused: true, epoch: 0 });
+
+  setControlGate(env.DB, { paused: 0, epoch: 1 });
+  env.DB.controlState.epoch = Number.MAX_SAFE_INTEGER + 1;
+  assert.deepEqual(await getControlState(env.DB), { paused: true, epoch: 0 });
+
+  assert.deepEqual(await getControlState(null), { paused: true, epoch: 0 });
+  assert.deepEqual(await getControlState({}), { paused: true, epoch: 0 });
+
+  const throwing = {
+    prepare() {
+      throw new Error("query exploded");
+    }
+  };
+  assert.deepEqual(await getControlState(throwing), { paused: true, epoch: 0 });
+  assert.equal(
+    await mayExecuteLeasedOutboxJob(throwing, {
+      jobId: "1",
+      leaseOwner: "worker:a",
+      epoch: 1
+    }),
+    false
+  );
+  assert.equal(
+    await mayExecuteLeasedOutboxJob(env.DB, {
+      jobId: "1",
+      leaseOwner: "worker:a",
+      epoch: 1
+    }),
+    false
+  );
+});
+
+test("paused control state admits webhooks but skips repair lease watchdog and network", async () => {
+  const env = makeEnv();
+  await seedActiveInstall(env);
+  setControlGate(env.DB, { paused: 1, epoch: 1 });
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method || "GET" });
+    return new Response("unexpected", { status: 500 });
+  };
+
+  const admitted = await invoke(
+    env,
+    await webhookRequest({
+      body: basePrPayload(),
+      event: "pull_request",
+      deliveryId: "d-paused-admit"
+    }),
+    { fetchImpl, ctx: {} }
+  );
+  assert.equal(admitted.status, 200);
+  const body = await admitted.json();
+  assert.equal(body.result, "queued");
+  assert.equal(
+    (await getRequestById(env.DB, body.request_id)).status,
+    REQUEST_STATUS.PENDING_DISPATCH
+  );
+  const jobs = await listOutboxJobs(env.DB);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].status, "pending");
+
+  const prohibitedSql = [];
+  const originalPrepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => {
+    const normalized = String(sql).replace(/\s+/g, " ");
+    if (
+      normalized.includes("SELECT 'dispatch:' || r.request_key")
+      || normalized.includes("SELECT 'cancel:' || r.workflow_run_id")
+      || normalized.includes("SELECT 'cancel:' || workflow_run_id")
+      || (normalized.includes("UPDATE review_requests")
+        && normalized.includes("FROM installations i"))
+      || (normalized.includes("FROM outbox_jobs")
+        && normalized.includes("ORDER BY job_id ASC")
+        && normalized.includes("LIMIT ?"))
+      || (normalized.includes("UPDATE outbox_jobs")
+        && normalized.includes("SET status = ?, lease_owner = ?"))
+      || normalized.includes("FROM review_requests WHERE request_id = ?")
+      || (normalized.includes("FROM review_requests")
+        && normalized.includes("updated_at <= ?"))
+    ) {
+      prohibitedSql.push(normalized);
+    }
+    return originalPrepare(sql);
+  };
+
+  assert.deepEqual(
+    await processOutbox(env, { fetchImpl, workerId: "paused-worker" }),
+    {
+      leased: 0,
+      completed: 0,
+      retried: 0,
+      obsolete: 0,
+      orphaned: 0
+    }
+  );
+  assert.deepEqual(await processWorkflowWatchdog(env, { fetchImpl }), {
+    scanned: 0,
+    terminalized: 0,
+    stillRunning: 0,
+    errors: 0
+  });
+  assert.deepEqual(await runScheduledMaintenance(env, { fetchImpl }), {
+    outbox: {
+      batches: 0,
+      leased: 0,
+      completed: 0,
+      retried: 0,
+      obsolete: 0,
+      orphaned: 0
+    },
+    watchdog: {
+      scanned: 0,
+      terminalized: 0,
+      stillRunning: 0,
+      errors: 0
+    }
+  });
+  assert.deepEqual(prohibitedSql, []);
+  assert.equal(calls.length, 0);
+  assert.equal((await listOutboxJobs(env.DB))[0].status, "pending");
+  assert.equal(await repairOutboxJobs(env.DB, new Date().toISOString()), 0);
+});
+
+test("cutover epoch fences repair and lease mutations at SQL time", async () => {
+  const env = makeEnv();
+  await seedActiveInstall(env);
+  await invoke(
+    env,
+    await webhookRequest({
+      body: basePrPayload(),
+      event: "pull_request",
+      deliveryId: "d-epoch-fence"
+    }),
+    { ctx: {} }
+  );
+  // Drop the admission-time dispatch job so repair would recreate it if ungated.
+  const existing = await listOutboxJobs(env.DB);
+  for (const job of existing) {
+    env.DB.outboxById.delete(String(job.job_id));
+    env.DB.outboxByKey.delete(job.job_key);
+  }
+  assert.equal((await listOutboxJobs(env.DB)).length, 0);
+
+  assert.equal(
+    await repairOutboxJobs(env.DB, new Date().toISOString(), null),
+    0
+  );
+  assert.equal(await repairOutboxJobs(env.DB, new Date().toISOString(), 99), 0);
+  assert.equal((await listOutboxJobs(env.DB)).length, 0);
+
+  setControlGate(env.DB, { paused: 1, epoch: 1 });
+  assert.equal(await repairOutboxJobs(env.DB, new Date().toISOString(), 1), 0);
+  assert.equal((await listOutboxJobs(env.DB)).length, 0);
+
+  setControlGate(env.DB, { paused: 0, epoch: 1 });
+  const originalBatch = env.DB.batch.bind(env.DB);
+  env.DB.batch = async (statements) => {
+    setControlGate(env.DB, { paused: 0, epoch: 2 });
+    return originalBatch(statements);
+  };
+  assert.equal(await repairOutboxJobs(env.DB, new Date().toISOString()), 0);
+  assert.equal((await listOutboxJobs(env.DB)).length, 0);
+  env.DB.batch = originalBatch;
+
+  setControlGate(env.DB, { paused: 0, epoch: 1 });
+  assert.ok((await repairOutboxJobs(env.DB, new Date().toISOString(), 1)) >= 1);
+  assert.equal((await listOutboxJobs(env.DB)).length, 1);
+
+  const nowMs = Date.now() + 2_000;
+  const now = new Date(nowMs).toISOString();
+  assert.equal(
+    (
+      await leaseOutboxJobs(env.DB, {
+        now,
+        leaseOwner: "epoch-worker",
+        leaseExpiresAt: new Date(nowMs + OUTBOX_LEASE_MS).toISOString(),
+        limit: 8,
+        epoch: 99
+      })
+    ).length,
+    0
+  );
+  assert.equal(
+    (
+      await leaseOutboxJobs(env.DB, {
+        now,
+        leaseOwner: "epoch-worker",
+        leaseExpiresAt: new Date(nowMs + OUTBOX_LEASE_MS).toISOString(),
+        limit: 8
+      })
+    ).length,
+    0
+  );
+  setControlGate(env.DB, { paused: 1, epoch: 1 });
+  assert.equal(
+    (
+      await leaseOutboxJobs(env.DB, {
+        now,
+        leaseOwner: "epoch-worker",
+        leaseExpiresAt: new Date(nowMs + OUTBOX_LEASE_MS).toISOString(),
+        limit: 8,
+        epoch: 1
+      })
+    ).length,
+    0
+  );
+
+  setControlGate(env.DB, { paused: 0, epoch: 1 });
+  const originalPrepare = env.DB.prepare.bind(env.DB);
+  let changedAfterCandidateRead = false;
+  env.DB.prepare = (sql) => {
+    const stmt = originalPrepare(sql);
+    const normalized = String(sql).replace(/\s+/g, " ");
+    if (
+      normalized.includes("FROM outbox_jobs")
+      && normalized.includes("ORDER BY job_id ASC")
+      && normalized.includes("FROM control_state c")
+    ) {
+      const originalAll = stmt.all.bind(stmt);
+      stmt.all = async (...args) => {
+        const result = await originalAll(...args);
+        if (!changedAfterCandidateRead && result.results.length > 0) {
+          changedAfterCandidateRead = true;
+          setControlGate(env.DB, { paused: 0, epoch: 2 });
+        }
+        return result;
+      };
+    }
+    return stmt;
+  };
+  assert.equal(
+    (
+      await leaseOutboxJobs(env.DB, {
+        now,
+        leaseOwner: "epoch-worker",
+        leaseExpiresAt: new Date(nowMs + OUTBOX_LEASE_MS).toISOString(),
+        limit: 8,
+        epoch: 1
+      })
+    ).length,
+    0
+  );
+  assert.equal(changedAfterCandidateRead, true);
+  assert.equal((await listOutboxJobs(env.DB))[0].status, "pending");
+  env.DB.prepare = originalPrepare;
+
+  setControlGate(env.DB, { paused: 0, epoch: 1 });
+  const leased = await leaseOutboxJobs(env.DB, {
+    now,
+    leaseOwner: "epoch-worker",
+    leaseExpiresAt: new Date(nowMs + OUTBOX_LEASE_MS).toISOString(),
+    limit: 8,
+    epoch: 1
+  });
+  assert.equal(leased.length, 1);
+  assert.equal(
+    await mayExecuteLeasedOutboxJob(env.DB, {
+      jobId: leased[0].job_id,
+      leaseOwner: "epoch-worker",
+      epoch: 1
+    }),
+    true
+  );
+  setControlGate(env.DB, { paused: 0, epoch: 2 });
+  assert.equal(
+    await mayExecuteLeasedOutboxJob(env.DB, {
+      jobId: leased[0].job_id,
+      leaseOwner: "epoch-worker",
+      epoch: 1
+    }),
+    false
+  );
+});
+
+test("cutover epoch change before network reschedules dispatch and cancel with zero fetches", async () => {
+  const env = makeEnv();
+  await seedActiveInstall(env);
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method || "GET" });
+    return new Response("should-not-run", { status: 500 });
+  };
+
+  const admitted = await invoke(
+    env,
+    await webhookRequest({
+      body: basePrPayload(),
+      event: "pull_request",
+      deliveryId: "d-cutover-dispatch"
+    }),
+    { ctx: {} }
+  );
+  const { request_id: requestId } = await admitted.json();
+  const originalPrepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => {
+    const stmt = originalPrepare(sql);
+    const originalRun = stmt.run.bind(stmt);
+    stmt.run = async (...args) => {
+      const result = await originalRun(...args);
+      const normalized = String(sql).replace(/\s+/g, " ");
+      if (
+        normalized.includes("UPDATE outbox_jobs")
+        && normalized.includes("SET status = ?, lease_owner = ?")
+        && (result?.meta?.changes ?? 0) > 0
+      ) {
+        setControlGate(env.DB, { paused: 0, epoch: 2 });
+      }
+      return result;
+    };
+    return stmt;
+  };
+
+  const dispatchStats = await processOutbox(env, {
+    fetchImpl,
+    workerId: "cutover-dispatch",
+    nowMs: Date.now() + 3_000
+  });
+  assert.equal(dispatchStats.leased, 1);
+  assert.equal(dispatchStats.retried, 1);
+  assert.equal(calls.length, 0);
+  const dispatchJob = await getOutboxJobByKey(
+    env.DB,
+    `dispatch:${(await getRequestById(env.DB, requestId)).request_key}`
+  );
+  assert.equal(dispatchJob.status, "pending");
+  assert.equal(
+    dispatchJob.last_error_code,
+    SAFE_OUTBOX_ERRORS.CUTOVER_EPOCH_CHANGED
+  );
+  assert.equal(dispatchJob.lease_owner, null);
+
+  // Cancel path under epoch N, changed before the network fence.
+  setControlGate(env.DB, { paused: 0, epoch: 3 });
+  const cancelRequest = env.DB.requestsById.get(String(requestId));
+  cancelRequest.status = REQUEST_STATUS.SUPERSEDED;
+  cancelRequest.workflow_run_id = "8888";
+  env.DB.outboxById.clear();
+  env.DB.outboxByKey.clear();
+  env.DB.nextOutboxId = 2;
+  const cancelNow = new Date().toISOString();
+  env.DB.outboxById.set("1", {
+    job_id: "1",
+    job_key: "cancel:8888",
+    job_type: "cancel",
+    request_id: String(requestId),
+    workflow_run_id: "8888",
+    status: "pending",
+    attempt_count: 0,
+    available_at: cancelNow,
+    lease_owner: null,
+    lease_expires_at: null,
+    last_error_code: null,
+    created_at: cancelNow,
+    updated_at: cancelNow
+  });
+  env.DB.outboxByKey.set("cancel:8888", env.DB.outboxById.get("1"));
+
+  const cancelStats = await processOutbox(env, {
+    fetchImpl,
+    workerId: "cutover-cancel",
+    nowMs: Date.now() + 4_000
+  });
+  assert.equal(cancelStats.leased, 1);
+  assert.equal(cancelStats.retried, 1);
+  assert.equal(calls.length, 0);
+  const cancelJob = await getOutboxJobByKey(env.DB, "cancel:8888");
+  assert.equal(cancelJob.status, "pending");
+  assert.equal(
+    cancelJob.last_error_code,
+    SAFE_OUTBOX_ERRORS.CUTOVER_EPOCH_CHANGED
+  );
+});
+
+test("cutover epoch fence never mutates a replacement owner's lease", async () => {
+  const env = makeEnv();
+  await seedActiveInstall(env);
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method || "GET" });
+    return new Response("should-not-run", { status: 500 });
+  };
+  await invoke(
+    env,
+    await webhookRequest({
+      body: basePrPayload(),
+      event: "pull_request",
+      deliveryId: "d-owner-fence"
+    }),
+    { ctx: {} }
+  );
+  const job = (await listOutboxJobs(env.DB))[0];
+  const nowMs = Date.now() + 5_000;
+  const now = new Date(nowMs).toISOString();
+  const leased = await leaseOutboxJobs(env.DB, {
+    now,
+    leaseOwner: "worker:a",
+    leaseExpiresAt: new Date(nowMs + OUTBOX_LEASE_MS).toISOString(),
+    limit: 1,
+    epoch: 1
+  });
+  assert.equal(leased.length, 1);
+  assert.equal(leased[0].job_id, job.job_id);
+
+  // Replacement owner wins before the original owner's fence check.
+  const row = env.DB.outboxById.get(String(job.job_id));
+  row.lease_owner = "worker:b";
+  row.status = "leased";
+  row.lease_expires_at = new Date(nowMs + OUTBOX_LEASE_MS).toISOString();
+
+  assert.equal(
+    await mayExecuteLeasedOutboxJob(env.DB, {
+      jobId: job.job_id,
+      leaseOwner: "worker:a",
+      epoch: 1
+    }),
+    false
+  );
+
+  // Owner-fenced reschedule by A must not rewrite B's lease.
+  assert.equal(
+    await rescheduleOutboxJob(env.DB, job.job_id, {
+      leaseOwner: "worker:a",
+      availableAt: new Date(nowMs + 1_000).toISOString(),
+      updatedAt: now,
+      errorCode: SAFE_OUTBOX_ERRORS.CUTOVER_EPOCH_CHANGED
+    }),
+    false
+  );
+  const after = await getOutboxJobByKey(env.DB, job.job_key);
+  assert.equal(after.lease_owner, "worker:b");
+  assert.equal(after.status, "leased");
+  assert.equal(after.last_error_code, null);
+  assert.equal(calls.length, 0);
+
+  row.lease_owner = "worker:a";
+  row.status = "completed";
+  assert.equal(
+    await mayExecuteLeasedOutboxJob(env.DB, {
+      jobId: job.job_id,
+      leaseOwner: "worker:a",
+      epoch: 1
+    }),
+    false
+  );
+  assert.equal(
+    await rescheduleOutboxJob(env.DB, job.job_id, {
+      leaseOwner: "worker:a",
+      availableAt: new Date(nowMs + 2_000).toISOString(),
+      updatedAt: now,
+      errorCode: SAFE_OUTBOX_ERRORS.CUTOVER_EPOCH_CHANGED
+    }),
+    false
+  );
+  assert.equal(row.status, "completed");
+  assert.equal(row.last_error_code, null);
+  assert.equal(calls.length, 0);
+
+  // Live process path also performs zero network work when owner diverges mid-flight.
+  setControlGate(env.DB, { paused: 0, epoch: 1 });
+  row.status = "pending";
+  row.lease_owner = null;
+  row.lease_expires_at = null;
+  row.available_at = now;
+  const originalPrepare = env.DB.prepare.bind(env.DB);
+  env.DB.prepare = (sql) => {
+    const stmt = originalPrepare(sql);
+    const originalRun = stmt.run.bind(stmt);
+    stmt.run = async (...args) => {
+      const result = await originalRun(...args);
+      const normalized = String(sql).replace(/\s+/g, " ");
+      if (
+        normalized.includes("UPDATE outbox_jobs")
+        && normalized.includes("SET status = ?, lease_owner = ?")
+        && (result?.meta?.changes ?? 0) > 0
+      ) {
+        const current = env.DB.outboxById.get(String(job.job_id));
+        current.lease_owner = "worker:replacement";
+      }
+      return result;
+    };
+    return stmt;
+  };
+  const stats = await processOutbox(env, {
+    fetchImpl,
+    workerId: "worker:a",
+    nowMs: nowMs + 10
+  });
+  assert.equal(stats.leased, 1);
+  assert.equal(stats.retried, 1);
+  assert.equal(calls.length, 0);
+  const finalJob = await getOutboxJobByKey(env.DB, job.job_key);
+  assert.equal(finalJob.lease_owner, "worker:replacement");
+  assert.equal(finalJob.status, "leased");
+});
+
+test("watchdog cutover epoch change prevents the next fetch", async () => {
+  const env = makeEnv();
+  const first = await createStartedReview(env, {
+    deliveryId: "d-watchdog-epoch-1",
+    checkId: "881",
+    claimNonce: "wd-epoch-claim-1",
+    startNonce: "wd-epoch-start-1",
+    runIdStart: 6100
+  });
+  const second = await createStartedReview(env, {
+    deliveryId: "d-watchdog-epoch-2",
+    checkId: "882",
+    claimNonce: "wd-epoch-claim-2",
+    startNonce: "wd-epoch-start-2",
+    runIdStart: 6200,
+    payload: basePrPayload({
+      number: "8",
+      pull_request: {
+        id: "7002",
+        number: "8",
+        draft: false,
+        head: { sha: HEAD_B },
+        user: { id: "42", login: "dev", type: "User" }
+      }
+    })
+  });
+  env.DB.requestsById.get(String(first.request_id)).updated_at =
+    "2026-07-01T00:00:00.000Z";
+  env.DB.requestsById.get(String(second.request_id)).updated_at =
+    "2026-07-01T00:00:00.000Z";
+
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method || "GET" });
+    if (calls.length === 1) {
+      setControlGate(env.DB, { paused: 0, epoch: 2 });
+    }
+    return new Response(
+      JSON.stringify({
+        id: String(url).split("/").pop(),
+        event: "workflow_dispatch",
+        status: "completed",
+        conclusion: "failure",
+        path: ".github/workflows/grok-review.yml@refs/heads/main",
+        repository: {
+          name: "control-repo",
+          owner: { login: "control-org" }
+        }
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  };
+
+  const stats = await processWorkflowWatchdog(env, {
+    fetchImpl,
+    nowMs: Date.parse("2026-07-28T12:00:00.000Z")
+  });
+  assert.equal(stats.scanned, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(
+    (await getRequestById(env.DB, first.request_id)).status,
+    REQUEST_STATUS.FAILED
+  );
+  assert.equal(
+    (await getRequestById(env.DB, second.request_id)).status,
+    REQUEST_STATUS.STARTED
+  );
+
+  setControlGate(env.DB, { paused: 1, epoch: 2 });
+  const paused = await processWorkflowWatchdog(env, {
+    fetchImpl,
+    nowMs: Date.parse("2026-07-28T12:00:00.000Z")
+  });
+  assert.deepEqual(paused, {
+    scanned: 0,
+    terminalized: 0,
+    stillRunning: 0,
+    errors: 0
+  });
+  assert.equal(calls.length, 1);
+});
+
+test("callback key overlap verifies every configured secret without a key oracle", async () => {
+  const env = makeEnv({
+    RUNNER_CALLBACK_SECRET_NEXT: CALLBACK_SECRET_NEXT
+  });
+  const started = await createStartedReview(env, {
+    deliveryId: "d-callback-overlap",
+    checkId: "771",
+    claimNonce: "overlap-claim",
+    startNonce: "overlap-start",
+    runIdStart: 7000
+  });
+
+  const primary = await invoke(
+    env,
+    await signedCallback(
+      env,
+      {
+        event: "claim",
+        request_id: String(started.request_id),
+        workflow_run_id: String(started.workflow_run_id)
+      },
+      { nonce: "overlap-primary", secret: CALLBACK_SECRET }
+    )
+  );
+  assert.equal(primary.status, 200);
+
+  const next = await invoke(
+    env,
+    await signedCallback(
+      env,
+      {
+        event: "claim",
+        request_id: String(started.request_id),
+        workflow_run_id: String(started.workflow_run_id)
+      },
+      { nonce: "overlap-next", secret: CALLBACK_SECRET_NEXT }
+    )
+  );
+  assert.equal(next.status, 200);
+
+  const unknown = await invoke(
+    env,
+    await signedCallback(
+      env,
+      {
+        event: "claim",
+        request_id: String(started.request_id),
+        workflow_run_id: String(started.workflow_run_id)
+      },
+      {
+        nonce: "overlap-unknown",
+        secret: "unknown-callback-secret-value-32bytes!!"
+      }
+    )
+  );
+  assert.equal(unknown.status, 401);
+  const unknownBody = await unknown.json();
+  assert.equal(unknownBody.error, "unauthorized");
+  assert.equal(JSON.stringify(unknownBody).includes("primary"), false);
+  assert.equal(JSON.stringify(unknownBody).includes("next"), false);
+  assert.equal(JSON.stringify(unknownBody).includes(CALLBACK_SECRET), false);
+  assert.equal(
+    JSON.stringify(unknownBody).includes(CALLBACK_SECRET_NEXT),
+    false
+  );
+
+  const malformed = await invoke(
+    makeEnv({ RUNNER_CALLBACK_SECRET_NEXT: "too-short" }),
+    await signedCallback(
+      env,
+      {
+        event: "claim",
+        request_id: "1",
+        workflow_run_id: "2"
+      },
+      { nonce: "overlap-malformed", secret: CALLBACK_SECRET }
+    )
+  );
+  assert.equal(malformed.status, 500);
+  assert.equal((await malformed.json()).error, "misconfigured");
+
+  let verifyCalls = 0;
+  const countingVerify = async (...args) => {
+    verifyCalls += 1;
+    const { verifyCallbackSignature256 } =
+      await import("../apps/grok-review-app/src/crypto-util.mjs");
+    return verifyCallbackSignature256(...args);
+  };
+  const counted = await handleRequest(
+    await signedCallback(
+      env,
+      {
+        event: "claim",
+        request_id: String(started.request_id),
+        workflow_run_id: String(started.workflow_run_id)
+      },
+      { nonce: "overlap-count", secret: CALLBACK_SECRET }
+    ),
+    env,
+    { waitUntil() {} },
+    { verifyCallbackSignature: countingVerify }
+  );
+  assert.equal(counted.status, 200);
+  assert.equal(verifyCalls, 2);
+});
+
+test("health gate returns exact sanitized runtime and control state shape", async () => {
+  const env = makeEnv();
+  setControlGate(env.DB, { paused: 1, epoch: 4 });
+  const healthz = await invoke(
+    env,
+    new Request("https://worker.example/healthz")
+  );
+  const health = await invoke(
+    env,
+    new Request("https://worker.example/health")
+  );
+  assert.equal(healthz.status, 200);
+  assert.equal(health.status, 200);
+  const expected = {
+    ok: true,
+    service: "grok-review-app",
+    runtime_commit: RUNTIME_COMMIT,
+    dispatch_paused: true,
+    cutover_epoch: 4
+  };
+  assert.deepEqual(await healthz.json(), expected);
+  assert.deepEqual(await health.json(), expected);
+
+  const malformed = await invoke(
+    makeEnv({ RUNTIME_COMMIT: "not-a-commit" }),
+    new Request("https://worker.example/healthz")
+  );
+  assert.equal(malformed.status, 500);
+  assert.equal((await malformed.json()).error, "misconfigured");
+
+  const envMissing = makeEnv();
+  delete envMissing.RUNTIME_COMMIT;
+  const missingRes = await invoke(
+    envMissing,
+    new Request("https://worker.example/healthz")
+  );
+  assert.equal(missingRes.status, 500);
+  assert.equal((await missingRes.json()).error, "misconfigured");
+
+  const body = JSON.stringify(expected);
+  assert.equal(body.includes("CONTROL_REPO"), false);
+  assert.equal(body.includes("control-org"), false);
+  assert.equal(body.includes("RUNNER_CALLBACK_SECRET"), false);
+  assert.equal(body.includes(CALLBACK_SECRET), false);
+  assert.equal(body.includes("WEBHOOK_SECRET"), false);
+  assert.equal(body.includes(WEBHOOK_SECRET), false);
+  assert.equal(body.includes("ghs_"), false);
+  assert.equal(
+    Object.keys(expected).sort().join(","),
+    "cutover_epoch,dispatch_paused,ok,runtime_commit,service"
+  );
 });

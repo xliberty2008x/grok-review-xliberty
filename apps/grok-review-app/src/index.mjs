@@ -9,8 +9,13 @@
  * Control-plane only: no target diffs, model execution, or review posting.
  */
 
-import { CALLBACK_PATH, WEBHOOK_PATH } from "./constants.mjs";
+import {
+  CALLBACK_PATH,
+  RUNTIME_COMMIT_HEX_RE,
+  WEBHOOK_PATH
+} from "./constants.mjs";
 import { handleCallback } from "./callback.mjs";
+import { getControlState } from "./db.mjs";
 import { errorResponse, jsonResponse } from "./http.mjs";
 import { runScheduledMaintenance } from "./outbox.mjs";
 import { handleWebhook } from "./webhook.mjs";
@@ -25,6 +30,29 @@ export function normalizePath(pathname) {
 }
 
 /**
+ * Sanitized runtime/gate health. Never exposes repository coordinates, binding
+ * names, secret names/values, D1 coordinates, or control tokens.
+ * @param {object} env
+ */
+async function healthResponse(env) {
+  const runtimeCommit = env?.RUNTIME_COMMIT;
+  if (
+    typeof runtimeCommit !== "string"
+    || !RUNTIME_COMMIT_HEX_RE.test(runtimeCommit)
+  ) {
+    return errorResponse(500, "misconfigured");
+  }
+  const control = await getControlState(env.DB);
+  return jsonResponse(200, {
+    ok: true,
+    service: "grok-review-app",
+    runtime_commit: runtimeCommit,
+    dispatch_paused: control.paused,
+    cutover_epoch: control.epoch
+  });
+}
+
+/**
  * @param {Request} request
  * @param {object} env
  * @param {ExecutionContext} [ctx]
@@ -36,7 +64,7 @@ export async function handleRequest(request, env, ctx, options = {}) {
   const path = normalizePath(url.pathname);
 
   if (request.method === "GET" && (path === "/healthz" || path === "/health")) {
-    return jsonResponse(200, { ok: true, service: "grok-review-app" });
+    return healthResponse(env);
   }
 
   // Exact route only — reject /webhook and other aliases.
@@ -159,6 +187,8 @@ export {
   addInstallationRepository,
   clearInstallationRepositories,
   isInstallationRepoAuthorized,
+  getControlState,
+  mayExecuteLeasedOutboxJob,
   getRequestById,
   getRequestByKey,
   getDelivery,

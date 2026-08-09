@@ -296,3 +296,38 @@ repository remains unqualified until `terminal_receipt_committed`.
   unsafe material.
 - Rejected or missing pattern: embedded ACP is not a hosted App operations or
   auth-watcher model.
+
+## Task 3 production cutover: durable pause epoch and callback-key overlap
+
+### `openai/codex-plugin-cc`
+
+- Exact revision: `db52e28f4d9ded852ab3942cea316258ae4ef346`.
+- Inspected files: `plugins/codex/scripts/lib/broker-lifecycle.mjs` and
+  `plugins/codex/scripts/session-lifecycle-hook.mjs`.
+- Useful invariant: durable lifecycle identity must be established and checked
+  before an external side effect proceeds.
+- Local adaptation: the hosted Worker owns a D1 singleton `control_state` gate
+  and SQL/pre-network fences so repair, lease, watchdog, and GitHub work stop
+  on pause or epoch change without discarding admitted webhook work.
+- Rejected or missing pattern: local best-effort teardown or in-process state
+  clearing is not a substitute for a durable hosted cutover gate.
+
+### `xai-org/grok-build`
+
+- Exact revisions: contract audit
+  `47348d13ec4508dcfe440e34c6d511bb02998fb2`; current-source check
+  `afbc0fb710320c7add294c2106d447ecc3e3af2e`.
+- Inspected files:
+  `crates/codegen/xai-grok-shell/src/session/acp_session_impl/tasks_cancel.rs`
+  and `crates/codegen/xai-grok-shell/src/leader/lock.rs`.
+- Useful invariant: cancellation and exclusive work remain bound to the
+  authoritative owner identity before the side effect runs.
+- Local adaptation: outbox jobs re-check the exact leased owner plus the
+  unpaused cutover epoch immediately before `dispatchWorkflow` /
+  `cancelWorkflowRun`, and owner-fenced reschedule uses
+  `cutover_epoch_changed` without rewriting a replacement owner's lease.
+- Rejected or missing pattern: in-memory actor flags and embedded ACP are not a
+  durable cross-invocation pause for a multi-invocation Worker/D1 control plane.
+
+This inspection is design evidence only. It does not qualify a live D1, Worker,
+GitHub, Cloudflare, or provider lifecycle.
