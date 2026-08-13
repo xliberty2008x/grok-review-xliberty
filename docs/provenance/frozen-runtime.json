@@ -8,7 +8,7 @@
   "grok_binary_sha256": "5cf05fe670b1818561daf7566b580a5de6b81149166499d61072e49640b541a4",
   "grok_package_integrity_sha256": "49862ac444a3ca9db560cac29c96b5f2503b4b004a61ac9ac64a558842398143",
   "grok_package_commit": "9bbd559437aaef77f2830978da7fcc8f59b07e33",
-  "model": "grok-4.5",
+  "model": "grok-4.6",
   "effort": "high",
   "frozen_app_test_count": 104,
   "required_current_test_count": 105,

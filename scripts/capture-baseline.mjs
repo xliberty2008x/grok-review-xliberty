@@ -38,7 +38,7 @@ const FROZEN = Object.freeze({
   runtime_commit: "ea3594fb1f7cc546ede6d3dca2282860e54b8721",
   runtime_tag: "grok-review-runtime-ea3594fb1f7cc546ede6d3dca2282860e54b8721",
   source_archive_sha256: "964a3a18f54f433577a854c6bb2e6bdb498e983d5c53d9371d7916d4e1031fc9",
-  node_version: "22.17.1", grok_version: "0.2.112", model: "grok-4.5", effort: "high",
+  node_version: "22.17.1", grok_version: "0.2.112", model: "grok-4.6", effort: "high",
   frozen_app_test_count: 104, required_current_test_count: 105,
   post_baseline_security_deltas: ["immutable-control-ref"]
 });

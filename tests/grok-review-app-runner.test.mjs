@@ -443,7 +443,7 @@ test("runtime configuration hard-gates exact commit, Node, and CLI version", () 
       effort: loadRunnerConfig(defaults, { runtimeRoot: "/trusted/runtime" })
         .effort,
     },
-    { model: "grok-code-fast-1", effort: "high" },
+    { model: "grok-4.6", effort: "high" },
   );
   assert.throws(
     () =>
@@ -1453,6 +1453,10 @@ test("static workflows retain a byte-identical staging alias until the renamed p
 
   const stagingWorkflow = readWorkflow("grok-review-app-worker-staging.yml");
   assert.equal(readWorkflow("grok-review-app-worker.yml"), stagingWorkflow);
+  assert.match(
+    stagingWorkflow,
+    /GROK_REVIEW_MODEL: \${{ vars\.GROK_MODEL \|\| 'grok-4\.6' }}/,
+  );
 
   const bodies = [];
   for (const entry of STATIC_WORKFLOWS) {
