@@ -109,8 +109,8 @@ jobs:
           GITHUB_APP_ID: ${{ vars.GROK_REVIEW_APP_ID }}
           GITHUB_APP_CLIENT_ID: ${{ vars.GROK_REVIEW_APP_CLIENT_ID }}
           GROK_REVIEW_WORKER_ORIGIN: ${{ vars.GROK_REVIEW_WORKER_URL }}
-          GROK_REVIEW_MODEL: ${{ vars.GROK_MODEL || 'grok-code-fast-1' }}
-          GROK_REVIEW_MODEL_VERSION: ${{ vars.GROK_MODEL || 'grok-code-fast-1' }}
+          GROK_REVIEW_MODEL: ${{ vars.GROK_MODEL || 'grok-4.6' }}
+          GROK_REVIEW_MODEL_VERSION: ${{ vars.GROK_MODEL || 'grok-4.6' }}
           GROK_REVIEW_EFFORT: ${{ vars.GROK_EFFORT || 'high' }}
           GITHUB_APP_PRIVATE_KEY: ${{ secrets.GROK_REVIEW_APP_PRIVATE_KEY }}
           RUNNER_CALLBACK_SECRET: ${{ secrets.RUNNER_CALLBACK_SECRET }}

@@ -284,13 +284,13 @@ export function loadRunnerConfig(env, { runtimeRoot = process.cwd() } = {}) {
       "invalid_receipt_public_key"
     ),
     grokAuthJson,
-    model: requiredString(env.GROK_REVIEW_MODEL || "grok-code-fast-1", "invalid_model", {
+    model: requiredString(env.GROK_REVIEW_MODEL || "grok-4.6", "invalid_model", {
       pattern: VERSION_RE
     }),
     modelVersion: requiredString(
       env.GROK_REVIEW_MODEL_VERSION
         || env.GROK_REVIEW_MODEL
-        || "grok-code-fast-1",
+        || "grok-4.6",
       "invalid_model_version",
       { pattern: VERSION_RE }
     ),
