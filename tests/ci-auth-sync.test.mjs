@@ -331,6 +331,36 @@ test("digest suppresses duplicates, force bypasses no-op, and age self-heals", (
   assert.equal(fs.readFileSync(stateFile, "utf8"), digestOnly);
 });
 
+test("below-floor expiry refreshes then uploads instead of skipping as unchanged", (t) => {
+  const fixture = baseFixture(t);
+  assert.equal(synchronizeAuth(fixture.args).status, "uploaded");
+
+  const stale = validPayload({
+    expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+  });
+  fs.writeFileSync(fixture.authPath, `${JSON.stringify(stale)}\n`, { mode: 0o600 });
+  fs.chmodSync(fixture.authPath, 0o600);
+
+  const freshRaw = `${JSON.stringify(validPayload({
+    expires_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString()
+  }))}\n`;
+  let refreshCalls = 0;
+  const result = synchronizeAuth(fixture.args, {
+    refreshAuth(authPath) {
+      refreshCalls += 1;
+      assert.equal(authPath, fixture.authPath);
+      fs.writeFileSync(authPath, freshRaw, { mode: 0o600 });
+      fs.chmodSync(authPath, 0o600);
+    }
+  });
+
+  assert.equal(refreshCalls, 1);
+  assert.equal(result.status, "uploaded");
+  const uploaded = captures(fixture.mock.capture);
+  assert.equal(uploaded.length, 2);
+  assert.equal(uploaded[1].input, freshRaw);
+});
+
 test("timeout and nonzero gh exits never advance digest state", (t) => {
   const timeoutFixture = baseFixture(t, { delayMs: 250 });
   assert.throws(

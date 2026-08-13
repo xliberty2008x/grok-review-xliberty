@@ -218,6 +218,49 @@ export function readPrivateAuthFile(authPath) {
   }
 }
 
+function maxSessionRemainingMs(raw, now = Date.now()) {
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw));
+  } catch {
+    return Number.NEGATIVE_INFINITY;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  let remaining = Number.NEGATIVE_INFINITY;
+  for (const entry of Object.values(parsed)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    if (typeof entry.key !== "string" || entry.key.trim().length < 16) continue;
+    if (
+      typeof entry.refresh_token !== "string"
+      || entry.refresh_token.trim().length === 0
+    ) {
+      continue;
+    }
+    if (typeof entry.expires_at !== "string") continue;
+    const expiresAt = Date.parse(entry.expires_at);
+    if (!Number.isFinite(expiresAt)) continue;
+    remaining = Math.max(remaining, expiresAt - now);
+  }
+  return remaining;
+}
+
+function refreshStaleAuthFile(
+  authPath,
+  raw,
+  {
+    now = Date.now(),
+    minimumValidityMs = DEFAULT_MINIMUM_VALIDITY_MS,
+    refreshAuth = null
+  } = {}
+) {
+  if (maxSessionRemainingMs(raw, now) >= minimumValidityMs) return raw;
+  if (typeof refreshAuth !== "function") return raw;
+  refreshAuth(authPath);
+  return readPrivateAuthFile(authPath);
+}
+
 export function validateAuthPayload(
   raw,
   {
@@ -640,7 +683,8 @@ export function synchronizeAuth(
     staleLockMs = DEFAULT_STALE_LOCK_MS,
     hardStaleLockMs = DEFAULT_HARD_STALE_LOCK_MS,
     maxSyncAgeMs = DEFAULT_MAX_SYNC_AGE_MS,
-    sourceEnv = process.env
+    sourceEnv = process.env,
+    refreshAuth = null
   } = {}
 ) {
   assertPrivateDirectory(args.stateDir, "State directory");
@@ -652,7 +696,11 @@ export function synchronizeAuth(
   });
   try {
     const evaluationNow = now ?? Date.now();
-    const raw = readPrivateAuthFile(args.authPath);
+    const raw = refreshStaleAuthFile(
+      args.authPath,
+      readPrivateAuthFile(args.authPath),
+      { now: evaluationNow, minimumValidityMs, refreshAuth }
+    );
     validateAuthPayload(raw, { now: evaluationNow, minimumValidityMs });
     const digest = crypto.createHash("sha256").update(raw).digest("hex");
     const stateFile = digestStatePath(args.stateDir, args.repo);
@@ -679,6 +727,35 @@ export function synchronizeAuth(
   }
 }
 
+function defaultRefreshAuth(authPath, home = os.homedir()) {
+  const grokBin = path.join(home, ".grok", "bin", "grok");
+  let resolved;
+  try {
+    resolved = fs.realpathSync(grokBin);
+  } catch {
+    return;
+  }
+  try {
+    assertVerifiedExecutable(resolved, "Grok CLI");
+  } catch {
+    return;
+  }
+  const parent = path.dirname(authPath);
+  if (path.basename(parent) !== ".grok") return;
+  spawnSync(resolved, ["models"], {
+    encoding: "buffer",
+    shell: false,
+    windowsHide: true,
+    timeout: 30_000,
+    env: {
+      HOME: path.dirname(parent),
+      USERPROFILE: path.dirname(parent),
+      GROK_HOME: parent,
+      PATH: "/usr/bin:/bin"
+    }
+  });
+}
+
 function main() {
   try {
     const args = parseSyncArgs(process.argv.slice(2));
@@ -686,7 +763,7 @@ function main() {
       process.stdout.write(`${usage()}\n`);
       return;
     }
-    const result = synchronizeAuth(args);
+    const result = synchronizeAuth(args, { refreshAuth: defaultRefreshAuth });
     if (result.status === "unchanged") {
       process.stdout.write("sync-grok-ci-auth: GitHub Actions secret is already current.\n");
     } else {
