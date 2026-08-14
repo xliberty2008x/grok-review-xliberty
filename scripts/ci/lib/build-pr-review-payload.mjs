@@ -132,6 +132,26 @@ function resolveRightSideLookup({ rightSideMap = null, rightSideLines = null }) 
 }
 
 /**
+ * Host-owned merge-base..head scope line. Never derived from model prose.
+ *
+ * @param {{ commitCount: number, changedFileCount: number }} scope
+ * @returns {string}
+ */
+export function formatMergeBaseHeadScopeLine(scope) {
+  const commitCount = scope?.commitCount;
+  const changedFileCount = scope?.changedFileCount;
+  if (
+    !Number.isSafeInteger(commitCount)
+    || commitCount < 0
+    || !Number.isSafeInteger(changedFileCount)
+    || changedFileCount < 0
+  ) {
+    throw new Error("hostScope counts are required");
+  }
+  return `Reviewed merge-base..head: ${commitCount} commits, ${changedFileCount} changed files.`;
+}
+
+/**
  * Map companion public job JSON + right-side diff targets to a GitHub create-review body.
  * Always uses event COMMENT. Zero findings still post a summary review.
  * Only empty-target may remain a skip.
@@ -141,7 +161,8 @@ function resolveRightSideLookup({ rightSideMap = null, rightSideLines = null }) 
  *   headSha: string,
  *   rightSideLines?: Set<string>,
  *   rightSideMap?: RightSideLookup,
- *   hostReceiptMarker?: string|null
+ *   hostReceiptMarker?: string|null,
+ *   hostScope?: { commitCount: number, changedFileCount: number }|null
  * }} args
  * @returns {BuildResult}
  */
@@ -150,7 +171,8 @@ export function buildPrReviewPayload({
   headSha,
   rightSideLines = null,
   rightSideMap = null,
-  hostReceiptMarker = null
+  hostReceiptMarker = null,
+  hostScope = null
 }) {
   if (!headSha || typeof headSha !== "string") {
     throw new Error("headSha is required");
@@ -251,9 +273,11 @@ export function buildPrReviewPayload({
   }
 
   const summaryText = sanitizePublicationProse(String(review.summary || "").trim() || "(no summary)");
+  const scopeLine = hostScope == null ? null : formatMergeBaseHeadScopeLine(hostScope);
   const bodyParts = [
     "## Grok review",
     "",
+    ...(scopeLine ? [scopeLine, ""] : []),
     summaryText,
     "",
     "## Issue counts by severity",

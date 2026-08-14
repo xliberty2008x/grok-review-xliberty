@@ -488,6 +488,55 @@ function isSupersessionError(error) {
   ]).has(safeErrorCode(error));
 }
 
+/**
+ * Host-owned cancelled-check summary for automatic head drift.
+ * Names the live head so the superseded SHA is not silent.
+ *
+ * @param {string} liveHeadSha
+ * @returns {string}
+ */
+export function formatAutomaticHeadMismatchSummary(liveHeadSha) {
+  const sha = canonicalHeadSha(liveHeadSha);
+  if (!sha) throw runnerError("automatic_mismatch_head_invalid");
+  return `Head moved to ${sha}. Review continues on the new commit.`;
+}
+
+function automaticHeadMismatchEvidence(error, state) {
+  if (safeErrorCode(error) !== "automatic_head_mismatch") return null;
+  const expectedHead = canonicalHeadSha(state.claimBinding?.expected_head_sha);
+  const liveHead = canonicalHeadSha(error.liveHeadSha);
+  const owner = typeof error.owner === "string" ? error.owner : "";
+  const name = typeof error.name === "string" ? error.name : "";
+  if (
+    !expectedHead
+    || !liveHead
+    || liveHead === expectedHead
+    || owner.length < 1
+    || owner.length > 255
+    || name.length < 1
+    || name.length > 255
+    || /[\u0000-\u001f\u007f/]/.test(owner)
+    || /[\u0000-\u001f\u007f/]/.test(name)
+  ) {
+    return null;
+  }
+  return { expectedHead, liveHead, owner, name };
+}
+
+function reviewHostScope(packet) {
+  const commitCount = packet?.receipt?.commitCount;
+  const changedFileCount = packet?.receipt?.changedFileCount;
+  if (
+    !Number.isSafeInteger(commitCount)
+    || commitCount < 0
+    || !Number.isSafeInteger(changedFileCount)
+    || changedFileCount < 0
+  ) {
+    throw runnerError("review_scope_counts_invalid");
+  }
+  return { commitCount, changedFileCount };
+}
+
 export function assertCredentialBoundary(runtimeRoot, activeTokens) {
   if (activeTokens.size !== 0) {
     throw runnerError("installation_token_active_before_model");
@@ -967,6 +1016,47 @@ async function publishReview(state, payload, marker) {
   });
 }
 
+async function publishVisibleAutomaticHeadMismatch(state, evidence) {
+  state.externalId = encodeExternalId({
+    installationId: state.inputs.installationId,
+    repositoryId: state.inputs.repositoryId,
+    pullNumber: state.inputs.pullNumber,
+    requestId: state.inputs.requestId
+  });
+  const startedAt = state.deps.now().toISOString();
+  const summary = formatAutomaticHeadMismatchSummary(evidence.liveHead);
+  await usingPhaseToken(
+    state,
+    INSTALLATION_TOKEN_PHASE.CHECK,
+    async (client) => {
+      state.check = await state.deps.createOrReconcileCheckRun({
+        client,
+        owner: evidence.owner,
+        name: evidence.name,
+        expectedAppId: state.config.githubAppId,
+        headSha: evidence.expectedHead,
+        externalId: state.externalId,
+        startedAt,
+        title: "Grok review started",
+        summary: `Reviewing exact head ${evidence.expectedHead.slice(0, 12)}.`
+      });
+      await state.deps.completeCheckRun({
+        client,
+        owner: evidence.owner,
+        name: evidence.name,
+        expectedAppId: state.config.githubAppId,
+        headSha: evidence.expectedHead,
+        externalId: state.externalId,
+        checkId: state.check.id,
+        conclusion: "cancelled",
+        completedAt: state.deps.now().toISOString(),
+        title: "Grok review superseded",
+        summary
+      });
+    }
+  );
+}
+
 async function completeKnownCheck(state, conclusion, title, summary) {
   const marker = ensureReceiptMarker(state);
   const receiptSummary = marker
@@ -1124,18 +1214,30 @@ export async function runCentralReview(input, overrides = {}) {
       throw runnerError("grok_executable_attestation_mismatch");
     }
 
-    await usingPhaseToken(
-      state,
-      INSTALLATION_TOKEN_PHASE.AUTHORITY,
-      async (client) => {
-        state.context = await fetchAuthority(state, client);
-        state.appIdentity = await deps.fetchAuthoritativeAppIdentity({
-          appClient: state.appClient,
-          repoClient: client,
-          expectedAppId: state.config.githubAppId
-        });
+    try {
+      await usingPhaseToken(
+        state,
+        INSTALLATION_TOKEN_PHASE.AUTHORITY,
+        async (client) => {
+          state.context = await fetchAuthority(state, client);
+          state.appIdentity = await deps.fetchAuthoritativeAppIdentity({
+            appClient: state.appClient,
+            repoClient: client,
+            expectedAppId: state.config.githubAppId
+          });
+        }
+      );
+    } catch (error) {
+      const evidence = automaticHeadMismatchEvidence(error, state);
+      if (evidence) {
+        try {
+          await publishVisibleAutomaticHeadMismatch(state, evidence);
+        } catch {
+          // Preserve the authority mismatch as the primary failure.
+        }
       }
-    );
+      throw error;
+    }
 
     const authorized = await state.callback.authorized({
       requestId: state.inputs.requestId,
@@ -1268,7 +1370,8 @@ export async function runCentralReview(input, overrides = {}) {
       job: { result: { review: state.modelResult.review } },
       headSha: state.context.headSha,
       rightSideMap,
-      hostReceiptMarker: marker
+      hostReceiptMarker: marker,
+      hostScope: reviewHostScope(state.packet)
     });
     if (mapped.skip || mapped.payload?.event !== "COMMENT") {
       throw runnerError("review_payload_invalid");

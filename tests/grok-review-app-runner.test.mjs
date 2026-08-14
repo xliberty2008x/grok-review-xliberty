@@ -128,6 +128,7 @@ function packet(headSha = HEAD) {
     receipt: Object.freeze({
       patchDigest: "3".repeat(64),
       patchBytes: Buffer.byteLength(patch),
+      commitCount: 1,
       changedFileCount: 1,
       instructions: Object.freeze({
         files: Object.freeze([
