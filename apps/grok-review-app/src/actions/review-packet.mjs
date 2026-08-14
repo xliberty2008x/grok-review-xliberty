@@ -368,6 +368,9 @@ function buildReviewPacketInternal(input, aggregateFetchTransportBounded) {
     receipt: Object.freeze({
       identity,
       digests,
+      commitCount: Number.isSafeInteger(diff.commitCount) && diff.commitCount >= 0
+        ? diff.commitCount
+        : null,
       changedFileCount: changedFiles.length,
       changedFiles: Object.freeze(changedFiles.map((f) => Object.freeze({
         path: f.path,
@@ -436,6 +439,20 @@ export async function collectAndBuildReviewPacket(repo, options) {
   });
 
   const diff = await collectExactHeadDiff(repo, identity);
+  const countOut = await repo.git(
+    ["rev-list", "--count", `${identity.mergeBaseSha}..${identity.headSha}`],
+    { allowFailure: true, maxStdout: 32 }
+  );
+  const countText = countOut.stdout.toString("ascii").trim();
+  const commitCount = Number(countText);
+  if (
+    countOut.status !== 0
+    || !/^[0-9]+$/.test(countText)
+    || !Number.isSafeInteger(commitCount)
+    || commitCount < 0
+  ) {
+    failCollector(CollectorErrorCode.E_COLLECTOR_DIFF, "Commit count is not bound to merge-base..head.");
+  }
 
   // All evidence reads are local-only after the bounded-filter fetch.
   const instructions = await collectHeadInstructions(repo, identity, diff.changedFiles);
@@ -451,7 +468,7 @@ export async function collectAndBuildReviewPacket(repo, options) {
     baseTipSha: repo.baseTipSha,
     mergeBaseSha: repo.mergeBaseSha,
     headSha: repo.headSha,
-    diff,
+    diff: { ...diff, commitCount },
     instructions
   }, hasBoundedFetchTransportProof(repo));
 

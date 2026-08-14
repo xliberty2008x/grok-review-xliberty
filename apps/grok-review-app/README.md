@@ -197,7 +197,9 @@ separate credentials with separate purposes and must never be reused.
   one-shot `authorized` fence. That fence supersedes only lower request IDs, so
   a run that turns stale during its authority check cannot cancel newer work.
 - A newer PR head cancels or supersedes older work. Only a current-head result
-  is eligible for submission.
+  is eligible for submission. Automatic `automatic_head_mismatch` completes the
+  bound SHA's `Grok review` Check as `cancelled` and names the live head; it
+  does not post COMMENT on the superseded SHA.
 - Model-generated mentions and the host receipt marker are escaped or reserved
   before posting.
 - The review event is always `COMMENT`, never `APPROVE` or

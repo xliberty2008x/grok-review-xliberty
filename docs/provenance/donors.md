@@ -369,3 +369,50 @@ GitHub, Cloudflare, or provider lifecycle.
 This inspection is design evidence only. Issue #4 remains unqualified until a
 real installed-App staging lifecycle reaches durable terminal receipt and
 App-authored review output.
+
+## Visible admit and honest supersession
+
+Contract-delta reason for new tests (frozen 105-test identity unchanged): add
+`tests/grok-review-visible-admit.test.mjs` that drives shipped
+`runCentralReview`, `fetchAuthoritativeReviewContext`, and
+`buildPrReviewPayload`. Automatic admit must create an `in_progress`
+`Grok review` check before Grok runs; `automatic_head_mismatch` must complete
+that check `cancelled` naming the live head and must not post COMMENT. Host
+`merge-base..head` commit/file counts belong in the COMMENT preface.
+
+### `openai/codex-plugin-cc`
+
+- Exact revision: `db52e28f4d9ded852ab3942cea316258ae4ef346`.
+- Inspected files: `plugins/codex/.claude-plugin/plugin.json`,
+  `plugins/codex/commands/review.md`,
+  `plugins/codex/scripts/lib/broker-lifecycle.mjs`, and
+  `plugins/codex/scripts/session-lifecycle-hook.mjs`.
+- Useful invariant: runtime-owned code holds launch, readiness, lifecycle, and
+  durable identity; session teardown leaves explicit broker/job cleanup rather
+  than dropping in-flight work without a recorded end.
+- Local adaptation: the hosted runner still owns Check and COMMENT writes.
+  Automatic mismatch now leaves a cancelled Check on the bound SHA instead of
+  discarding the request with no GitHub-visible terminal.
+- Rejected or missing pattern: the donor's local session cleanup can tolerate
+  termination failure before removing state. A hosted reviewer must not drop a
+  bound SHA without durable Check evidence. This donor has no GitHub Check or
+  exact-head App posting model.
+
+### `xai-org/grok-build`
+
+- Exact revisions: contract audit
+  `47348d13ec4508dcfe440e34c6d511bb02998fb2`; current-source check
+  `afbc0fb710320c7add294c2106d447ecc3e3af2e`.
+- Inspected files:
+  `crates/codegen/xai-grok-shell/src/session/acp_session_impl/tasks_cancel.rs`
+  and `crates/codegen/xai-grok-shell/src/leader/lock.rs`.
+- Useful invariant: cancellation is owner-scoped and leaves a terminal on the
+  cancelled work; exclusive lock/identity is established before the external
+  side effect.
+- Local adaptation: `automatic_head_mismatch` still refuses COMMENT on a dead
+  SHA and still does not call the authorized supersession fence. It now
+  completes the bound-SHA Check as `cancelled` and names the live head so the
+  newer `synchronize` request remains the owner of that head.
+- Rejected or missing pattern: embedded ACP cancel and leader flock are not a
+  GitHub App Check/review contract. Do not rebind a stale job to the live head
+  or post COMMENT on a superseded SHA.

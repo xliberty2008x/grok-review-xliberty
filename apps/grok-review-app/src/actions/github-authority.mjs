@@ -10,9 +10,15 @@ import {
   isCanonicalDecimalId
 } from "../ids.mjs";
 
-function authorityError(code) {
+function authorityError(code, extras = null) {
   const error = new Error(code);
   error.code = code;
+  if (extras && typeof extras === "object" && !Array.isArray(extras)) {
+    if (extras.liveHeadSha) error.liveHeadSha = extras.liveHeadSha;
+    if (extras.expectedHeadSha) error.expectedHeadSha = extras.expectedHeadSha;
+    if (extras.owner) error.owner = extras.owner;
+    if (extras.name) error.name = extras.name;
+  }
   return error;
 }
 
@@ -241,7 +247,14 @@ export async function fetchAuthoritativeReviewContext(input) {
     const expectedHead = canonicalHeadSha(input.expectedHeadSha);
     if (!expectedHead) throw authorityError("automatic_expected_head_missing");
     if (pull.draft === true) throw authorityError("automatic_draft_rejected");
-    if (headSha !== expectedHead) throw authorityError("automatic_head_mismatch");
+    if (headSha !== expectedHead) {
+      throw authorityError("automatic_head_mismatch", {
+        liveHeadSha: headSha,
+        expectedHeadSha: expectedHead,
+        owner,
+        name
+      });
+    }
   } else if (!isManual) {
     throw authorityError("invalid_trigger_kind");
   }
